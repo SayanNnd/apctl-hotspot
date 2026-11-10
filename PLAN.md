@@ -21,7 +21,7 @@ On the tested CachyOS laptop with RTL8852CE, the laptop stays connected to Wi-Fi
 1. Test `apctl` on more adapters and Linux distributions.
 2. Add firewalld support and make firewall integration clearer for other systems.
 3. Add fixture-based tests for command parsing and state handling.
-4. Build a TUI for hotspot settings and controls.
+4. Improve the TUI presentation and accessibility after user feedback.
 5. Package and publish `apctl-hotspot` after portability testing.
 
 ## Known limits

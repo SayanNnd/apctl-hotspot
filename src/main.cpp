@@ -2,6 +2,7 @@
 #include <cerrno>
 #include <cctype>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -575,7 +576,8 @@ void print_help() {
               << "  show-password        Show hotspot name, password, and QR code\n"
               << "  change-password      Prompt for a new hotspot password\n"
               << "  change-ssid          Prompt for a new hotspot name\n"
-              << "  down                 Stop the hotspot\n";
+              << "  down                 Stop the hotspot\n"
+              << "  tui                  Open the interactive terminal interface\n";
 }
 
 int up() {
@@ -705,6 +707,133 @@ int down() {
     return 1;
 }
 
+namespace {
+struct termios tui_original_termios{};
+volatile sig_atomic_t tui_terminal_active = 0;
+
+void handle_tui_interrupt(int) {
+    if (tui_terminal_active) {
+        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &tui_original_termios);
+        static constexpr char reset[] = "\033[?25h\033[0m\n";
+        (void)write(STDOUT_FILENO, reset, sizeof(reset) - 1);
+    }
+    _exit(130);
+}
+
+class TuiTerminal {
+public:
+    bool enter() {
+        if (active_) return true;
+        if (tcgetattr(STDIN_FILENO, &original_) != 0) return false;
+        tui_original_termios = original_;
+        termios raw = original_;
+        raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return false;
+        active_ = true;
+        tui_terminal_active = 1;
+        static constexpr char hide_cursor[] = "\033[?25l";
+        (void)write(STDOUT_FILENO, hide_cursor, sizeof(hide_cursor) - 1);
+        return true;
+    }
+
+    void leave() {
+        if (!active_) return;
+        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_);
+        active_ = false;
+        tui_terminal_active = 0;
+        static constexpr char restore[] = "\033[?25h\033[0m";
+        (void)write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+    }
+
+    ~TuiTerminal() { leave(); }
+
+private:
+    termios original_{};
+    bool active_ = false;
+};
+
+class TuiSignalHandler {
+public:
+    TuiSignalHandler() {
+        struct sigaction action{};
+        action.sa_handler = handle_tui_interrupt;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = 0;
+        installed_ = sigaction(SIGINT, &action, &previous_) == 0;
+    }
+
+    ~TuiSignalHandler() {
+        if (installed_) (void)sigaction(SIGINT, &previous_, nullptr);
+    }
+
+private:
+    struct sigaction previous_{};
+    bool installed_ = false;
+};
+
+void draw_tui() {
+    std::cout << "\033[2J\033[H"
+              << "┌────────────────────────────────────────────────────────┐\n"
+              << "│ apctl                                       Wi-Fi hotspot │\n"
+              << "└────────────────────────────────────────────────────────┘\n\n";
+    print_status();
+    std::cout << "\n  1  Start hotspot\n"
+              << "  2  Stop hotspot\n"
+              << "  3  Check Wi-Fi support\n"
+              << "  4  Show password and QR code\n"
+              << "  5  Change password\n"
+              << "  6  Change hotspot name\n"
+              << "  r  Refresh status\n"
+              << "  q  Quit\n\n"
+              << "Choose an action: " << std::flush;
+}
+
+int run_tui_action(char key) {
+    switch (key) {
+        case '1': return up();
+        case '2': return down();
+        case '3': return check();
+        case '4': show_password(); return 0;
+        case '5': return change_password();
+        case '6': return change_ssid();
+        default: return 0;
+    }
+}
+
+int tui() {
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+        std::cerr << "Run `apctl tui` in a terminal.\n";
+        return 2;
+    }
+    TuiSignalHandler signal_handler;
+    TuiTerminal terminal;
+    while (true) {
+        draw_tui();
+        if (!terminal.enter()) {
+            std::cerr << "Couldn't enable keyboard input for the terminal interface.\n";
+            return 1;
+        }
+        char key = 0;
+        const ssize_t count = read(STDIN_FILENO, &key, 1);
+        terminal.leave();
+        if (count != 1) return 1;
+        if (key == 'q' || key == 'Q') {
+            std::cout << "\033[2J\033[H";
+            return 0;
+        }
+        if (key == 'r' || key == 'R') continue;
+        if (key < '1' || key > '6') continue;
+        std::cout << "\033[2J\033[H";
+        (void)run_tui_action(key);
+        std::cout << "\nPress Enter to return to apctl: " << std::flush;
+        std::string line;
+        std::getline(std::cin, line);
+    }
+}
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         print_help();
@@ -720,6 +849,7 @@ int main(int argc, char** argv) {
     if (action == "change-password") return change_password();
     if (action == "change-ssid") return change_ssid();
     if (action == "down") return down();
+    if (action == "tui") return tui();
     std::cerr << "Unknown command: " << action << ". Run `apctl help` to see available commands.\n";
     return 2;
 }

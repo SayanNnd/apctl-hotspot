@@ -6,7 +6,7 @@ A terminal tool to start a Wi-Fi hotspot on Linux while staying connected to Wi-
 
 ## Preview
 
-The current build is a command-line tool. A terminal interface (TUI) is planned; there is no TUI screenshot to show yet.
+The terminal interface is available with `apctl tui`. It shows Wi-Fi and hotspot status and provides keyboard shortcuts for starting/stopping the hotspot, checking support, viewing credentials, and changing settings.
 
 ## Install
 
@@ -39,6 +39,7 @@ sudo cmake --install build --prefix /usr/local
 | `change-password` | `apctl change-password` — securely prompt for and confirm a new password. |
 | `change-ssid` | `apctl change-ssid` — prompt for a new hotspot name. |
 | `down` | `apctl down` — stop the app-managed hotspot and clean up its recorded rules. |
+| `tui` | `apctl tui` — open the interactive terminal interface. |
 
 ### Typical flow
 
@@ -48,7 +49,11 @@ apctl gen "My Hotspot"
 apctl up
 # Later:
 apctl down
+# Or open the interactive interface:
+apctl tui
 ```
+
+In the TUI, press `1` to start, `2` to stop, `3` to check support, `4` to show credentials, `5` to change the password, `6` to change the hotspot name, `r` to refresh, or `q` to quit. Quitting the TUI leaves a running hotspot active; use `2` or `apctl down` to stop it.
 
 If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
 

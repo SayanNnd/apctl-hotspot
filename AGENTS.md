@@ -10,7 +10,7 @@ Build `apctl`, a Linux terminal tool that starts a Wi-Fi hotspot while keeping t
 - Hotspot sharing uses a separate AP virtual interface, a locally administered MAC, and the same channel as the connected Wi-Fi uplink.
 - NetworkManager provides the AP profile and shared IPv4. The current firewall integration handles UFW only.
 - The tested setup is CachyOS with a Realtek RTL8852CE (`rtw89_8852ce`) and UFW. Other systems and adapters remain unverified.
-- A TUI and fixture-based tests are planned; do not describe them as implemented.
+- A dependency-free keyboard TUI is available through `apctl tui`; fixture-based tests are still planned.
 
 ## Implementation rules
 
