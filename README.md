@@ -6,11 +6,11 @@ A terminal tool to start a Wi-Fi hotspot on Linux while staying connected to Wi-
 
 ## Preview
 
-The terminal interface is available with `apctl tui`. It shows Wi-Fi and hotspot status and provides keyboard shortcuts for starting/stopping the hotspot, checking support, viewing credentials, and changing settings.
+Run `apctl tui` for a full-screen interface with separate core, CLI, and TUI code. It uses FTXUI, keeps the terminal responsive while NetworkManager actions run, and restores the terminal when you quit.
 
 ## Install
 
-There is no AUR package yet. Install a C++17 compiler, CMake, Ninja, NetworkManager, `iw`, and `pkexec` using your distribution's package manager, then build from source:
+There is no AUR package yet. Install a C++17 compiler, CMake, Ninja, NetworkManager, `iw`, and `pkexec` using your distribution's package manager, then build from source. CMake fetches the pinned FTXUI dependency on the first configure, so that step needs network access.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -39,7 +39,7 @@ sudo cmake --install build --prefix /usr/local
 | `change-password` | `apctl change-password` — securely prompt for and confirm a new password. |
 | `change-ssid` | `apctl change-ssid` — prompt for a new hotspot name. |
 | `down` | `apctl down` — stop the app-managed hotspot and clean up its recorded rules. |
-| `tui` | `apctl tui` — open the interactive terminal interface. |
+| `tui` | `apctl tui` — open the full-screen interactive terminal interface. |
 
 ### Typical flow
 
@@ -53,7 +53,7 @@ apctl down
 apctl tui
 ```
 
-In the TUI, press `1` to start, `2` to stop, `3` to check support, `4` to show credentials, `5` to change the password, `6` to change the hotspot name, `r` to refresh, or `q` to quit. Quitting the TUI leaves a running hotspot active; use `2` or `apctl down` to stop it.
+In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. Results appear in a centered, severity-colored popup; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows an animated working indicator. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
 
 If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
 

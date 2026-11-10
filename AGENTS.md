@@ -7,10 +7,12 @@ Build `apctl`, a Linux terminal tool that starts a Wi-Fi hotspot while keeping t
 ## Current behavior
 
 - CLI commands: `help`, `check`, `status`, `gen [SSID]`, `up` (`open` alias), `show-password`, `change-password`, `change-ssid`, and `down`.
+- `apctl tui` opens the full-screen FTXUI interface. Keep it as a frontend that calls the core service; do not add NetworkManager or firewall logic to UI code.
+- Keep code separated by responsibility: CLI entry point under `src/cli`, hotspot and process operations under `src/core`, and interactive interface under `src/tui`.
 - Hotspot sharing uses a separate AP virtual interface, a locally administered MAC, and the same channel as the connected Wi-Fi uplink.
 - NetworkManager provides the AP profile and shared IPv4. The current firewall integration handles UFW only.
 - The tested setup is CachyOS with a Realtek RTL8852CE (`rtw89_8852ce`) and UFW. Other systems and adapters remain unverified.
-- A dependency-free keyboard TUI is available through `apctl tui`; fixture-based tests are still planned.
+- An FTXUI-based keyboard and mouse TUI is available through `apctl tui`; backend operations run asynchronously so they do not block rendering.
 
 ## Implementation rules
 
@@ -29,7 +31,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Use C++17 and compile with `-Wall -Wextra -Wpedantic`. Do not add dependencies without approval. Do not run tests unless requested. Never test against real networking, firewall, or privileged system state without the user's authorization.
+Use C++17 and compile with `-Wall -Wextra -Wpedantic`. FTXUI is the approved TUI dependency and its version is pinned in CMake; do not add other dependencies without approval. Do not run tests unless requested. Never test against real networking, firewall, or privileged system state without the user's authorization.
 
 ## Documentation
 

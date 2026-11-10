@@ -10,6 +10,7 @@ Build `apctl`, a terminal tool to start a Wi-Fi hotspot on Linux while staying c
 - Concurrent Wi-Fi + AP interface setup using NetworkManager, including same-channel selection: implemented.
 - UFW DHCP, DNS, and forwarding rules with ownership-aware cleanup: implemented for the tested setup.
 - Credential QR output and user-friendly CLI messages: implemented.
+- Full-screen FTXUI TUI with mouse support, modal results, and asynchronous backend actions: implemented; runtime polish pending.
 - Build: C++17 with CMake/Ninja.
 
 ## Verified acceptance scenario
@@ -21,7 +22,7 @@ On the tested CachyOS laptop with RTL8852CE, the laptop stays connected to Wi-Fi
 1. Test `apctl` on more adapters and Linux distributions.
 2. Add firewalld support and make firewall integration clearer for other systems.
 3. Add fixture-based tests for command parsing and state handling.
-4. Improve the TUI presentation and accessibility after user feedback.
+4. Refine TUI presentation and accessibility after runtime feedback.
 5. Package and publish `apctl-hotspot` after portability testing.
 
 ## Known limits
