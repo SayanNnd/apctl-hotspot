@@ -1,4 +1,4 @@
-# apctl
+# apctl-hotspot
 
 A terminal tool to start a Wi-Fi hotspot on Linux while staying connected to Wi-Fi.
 
@@ -25,14 +25,38 @@ sudo cmake --install build --prefix /usr/local
 
 ## Usage
 
+### All commands
+
+| Command | Usage |
+| --- | --- |
+| `help` | `apctl help` — list commands. `apctl -h` and `apctl --help` are aliases. |
+| `check` | `apctl check` — check concurrent Wi-Fi/hotspot support and the current channel. |
+| `status` | `apctl status` — show the Wi-Fi connection, hotspot state, and connected device count. |
+| `gen` | `apctl gen [SSID]` — generate and save credentials. The SSID is optional; the default is `apctl-hotspot`. |
+| `up` | `apctl up` — start the hotspot and display its credentials and QR code. |
+| `open` | `apctl open` — alias for `up`. |
+| `show-password` | `apctl show-password` — display the hotspot name, password, and QR code. |
+| `change-password` | `apctl change-password` — securely prompt for and confirm a new password. |
+| `change-ssid` | `apctl change-ssid` — prompt for a new hotspot name. |
+| `down` | `apctl down` — stop the app-managed hotspot and clean up its recorded rules. |
+
+### Typical flow
+
 ```sh
-apctl check        # Check Wi-Fi/hotspot concurrency
-apctl gen [SSID]   # Save a name and generate a password
-apctl up           # Start the hotspot
-apctl down         # Stop it
+apctl check
+apctl gen "My Hotspot"
+apctl up
+# Later:
+apctl down
 ```
 
-`apctl up` prints the hotspot name, password, and QR code. Other commands include `status`, `show-password`, `change-password`, `change-ssid`, and `help`.
+If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
+
+## Authorization prompts and cleanup
+
+Starting a hotspot may show more than one system password prompt. These are normal `pkexec` authorization prompts for privileged setup steps: creating and preparing the extra Wi-Fi interface, and—when UFW is active—adding the firewall rules needed for client DHCP, DNS, and internet forwarding. The prompts themselves are harmless: they do not change your login password or install software. Approving them permits those specific network changes. The app does not read or save your system password. Depending on your desktop's authorization policy, it may reuse a recent approval or prompt again for another step.
+
+The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. Your existing Wi-Fi connection and unrelated firewall rules are left in place.
 
 ## Requirements and support
 

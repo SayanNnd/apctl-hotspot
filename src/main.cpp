@@ -213,7 +213,7 @@ bool add_ufw_rule(const std::vector<std::string>& rule, bool& owned) {
     }
     const auto current = run({"ufw", "show", "added"});
     if (current.exit_code != 0) {
-        std::cerr << "Couldn't check the firewall settings. No changes were made; retry `hotspot up`.\n";
+        std::cerr << "Couldn't check the firewall settings. No changes were made; retry `apctl up`.\n";
         return false;
     }
     if (current.out.find(fingerprint) != std::string::npos) {
@@ -231,7 +231,7 @@ bool configure_firewall(FirewallState& state, std::string_view ap, std::string_v
         add_ufw_rule({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "67", "proto", "udp"}, state.dhcp) && save_state(state) &&
         add_ufw_rule({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "53", "proto", "udp"}, state.dns) && save_state(state) &&
         add_ufw_rule({"ufw", "route", "allow", "in", "on", std::string(ap), "out", "on", std::string(uplink), "from", "10.42.0.0/24", "to", "any"}, state.route) && save_state(state);
-    if (!ready) std::cerr << "Couldn't finish network sharing setup. Approve the system prompt, then retry `hotspot up`.\n";
+    if (!ready) std::cerr << "Couldn't finish network sharing setup. Approve the system prompt, then retry `apctl up`.\n";
     return ready;
 }
 
@@ -272,7 +272,7 @@ bool wait_until_available(std::string_view iface, std::string& state_out) {
 bool prepare_owned_ap() {
     constexpr std::string_view ap = "ap0";
     if (!command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, true)) {
-        std::cerr << "Couldn't prepare Wi-Fi for the hotspot. Run `hotspot status` and retry.\n";
+        std::cerr << "Couldn't prepare Wi-Fi for the hotspot. Run `apctl status` and retry.\n";
         return false;
     }
     if (!privileged({"ip", "link", "set", "dev", std::string(ap), "down"}) ||
@@ -281,7 +281,7 @@ bool prepare_owned_ap() {
     if (!command({"nmcli", "device", "set", std::string(ap), "managed", "yes"})) return false;
     std::string device_state;
     if (!wait_until_available(ap, device_state)) {
-        std::cerr << "Wi-Fi isn't ready to start the hotspot. Run `hotspot status`, then retry.\n";
+        std::cerr << "Wi-Fi isn't ready to start the hotspot. Run `apctl status`, then retry.\n";
         return false;
     }
     return true;
@@ -388,12 +388,12 @@ bool command(const std::vector<std::string>& args, bool quiet) {
             std::cerr << "System permission is required. Approve the authorization prompt and retry.\n";
         } else if (detail.find("not a valid channel") != std::string::npos ||
                    (detail.find("channel") != std::string::npos && detail.find("invalid") != std::string::npos)) {
-            std::cerr << "The Wi-Fi channel is no longer available. Run `hotspot check` and retry.\n";
+            std::cerr << "The Wi-Fi channel is no longer available. Run `apctl check` and retry.\n";
         } else if (detail.find("device is not available") != std::string::npos || detail.find("could not be readied") != std::string::npos ||
                    detail.find("device or resource busy") != std::string::npos) {
-            std::cerr << "Wi-Fi isn't ready to start the hotspot. Run `hotspot status`, then retry.\n";
+            std::cerr << "Wi-Fi isn't ready to start the hotspot. Run `apctl status`, then retry.\n";
         } else {
-            std::cerr << "NetworkManager couldn't complete that step. Run `hotspot status` and retry.\n";
+            std::cerr << "NetworkManager couldn't complete that step. Run `apctl status` and retry.\n";
         }
     }
     return false;
@@ -442,7 +442,7 @@ int check() {
     const auto nm = run({"nmcli", "general", "status"});
     if (nm.exit_code != 0) { std::cerr << "Network settings aren't available right now.\n"; return 3; }
     const auto iface = active_wifi();
-    if (!iface) { std::cerr << "Connect to Wi-Fi first, then run `hotspot check`.\n"; return 3; }
+    if (!iface) { std::cerr << "Connect to Wi-Fi first, then run `apctl check`.\n"; return 3; }
     const bool concurrent = concurrent_capability();
     std::cout << "Wi-Fi: connected on " << *iface << '\n';
     std::cout << "Wi-Fi and hotspot together: " << (concurrent ? "supported" : "not supported by this adapter") << '\n';
@@ -470,7 +470,7 @@ void show_password() {
     if (config) {
         std::cout << "SSID: " << config->ssid << "\nPassword: " << config->password << '\n';
     } else {
-        std::cerr << "Couldn't read the active hotspot details. Start it with `hotspot up` first.\n";
+        std::cerr << "Couldn't read the active hotspot details. Start it with `apctl up` first.\n";
     }
     if (config) std::cerr << "QR code unavailable; the SSID and password are shown above.\n";
 }
@@ -490,7 +490,7 @@ bool valid_password(std::string_view password) {
 
 int change_password() {
     auto config = load_config();
-    if (!config) { std::cerr << "No saved hotspot settings. Run `hotspot gen [SSID]` first.\n"; return 2; }
+    if (!config) { std::cerr << "No saved hotspot settings. Run `apctl gen [SSID]` first.\n"; return 2; }
     const auto first = prompt_secret("New hotspot password (8–63 characters): ");
     if (!first) { std::cerr << "Could not read a hidden password from the terminal.\n"; return 1; }
     if (!valid_password(*first)) { std::cerr << "Password must be 8–63 characters and contain no line breaks.\n"; return 2; }
@@ -514,7 +514,7 @@ int change_password() {
     }
     const auto restarted = restart_profile_if_active(state.profile_uuid);
     if (!restarted) {
-        std::cerr << "Password saved, but the hotspot couldn't restart. Run `hotspot up` to try again.\n";
+        std::cerr << "Password saved, but the hotspot couldn't restart. Run `apctl up` to try again.\n";
         return 1;
     }
     if (*restarted) {
@@ -528,7 +528,7 @@ int change_password() {
 
 int change_ssid() {
     auto config = load_config();
-    if (!config) { std::cerr << "No saved hotspot settings. Run `hotspot gen [SSID]` first.\n"; return 2; }
+    if (!config) { std::cerr << "No saved hotspot settings. Run `apctl gen [SSID]` first.\n"; return 2; }
     std::cout << "New hotspot SSID: " << std::flush;
     std::string new_ssid;
     if (!std::getline(std::cin, new_ssid)) { std::cerr << "Could not read the new SSID.\n"; return 1; }
@@ -552,7 +552,7 @@ int change_ssid() {
     }
     const auto restarted = restart_profile_if_active(state.profile_uuid);
     if (!restarted) {
-        std::cerr << "New hotspot name saved, but the hotspot couldn't restart. Run `hotspot up` to try again.\n";
+        std::cerr << "New hotspot name saved, but the hotspot couldn't restart. Run `apctl up` to try again.\n";
         return 1;
     }
     if (*restarted) {
@@ -565,21 +565,22 @@ int change_ssid() {
 }
 
 void print_help() {
-    std::cout << "apctl commands\n"
-              << "  help              Show this help\n"
-              << "  check             Check if this computer can share Wi-Fi\n"
-              << "  status            Show Wi-Fi and hotspot status\n"
-              << "  gen [SSID]        Generate and save hotspot credentials\n"
-              << "  up | open         Start the concurrent hotspot\n"
-              << "  show-password     Show hotspot name, password, and QR code\n"
-              << "  change-password   Prompt for a new hotspot password\n"
-              << "  change-ssid       Prompt for a new hotspot SSID\n"
-              << "  down              Stop and clean up the app hotspot\n";
+    std::cout << "Usage: apctl <command>\n"
+              << "  help                 Show this help (-h and --help also work)\n"
+              << "  check                Check if this computer can share Wi-Fi\n"
+              << "  status               Show Wi-Fi and hotspot status\n"
+              << "  gen [SSID]           Save a hotspot name and generate a password\n"
+              << "  up                   Start the hotspot\n"
+              << "  open                 Alias for up\n"
+              << "  show-password        Show hotspot name, password, and QR code\n"
+              << "  change-password      Prompt for a new hotspot password\n"
+              << "  change-ssid          Prompt for a new hotspot name\n"
+              << "  down                 Stop the hotspot\n";
 }
 
 int up() {
     const auto config = load_config();
-    if (!config) { std::cerr << "Hotspot details aren't set up yet. Run `hotspot gen` first.\n"; return 2; }
+    if (!config) { std::cerr << "Hotspot details aren't set up yet. Run `apctl gen` first.\n"; return 2; }
     auto state = load_state();
     if (!state.profile_uuid.empty() && connection_exists_uuid(state.profile_uuid)) {
         const auto active_uuid = run({"nmcli", "-g", "GENERAL.CON-UUID", "device", "show", "ap0"});
@@ -595,8 +596,8 @@ int up() {
     }
     const auto iface = active_wifi();
     const auto channel = iface ? connected_channel(*iface) : std::nullopt;
-    if (!iface) { std::cerr << "Connect to Wi-Fi first, then run `hotspot up`.\n"; return 3; }
-    if (!channel) { std::cerr << "Couldn't read the Wi-Fi channel. Reconnect to Wi-Fi, then retry.\n"; return 3; }
+    if (!iface) { std::cerr << "Connect to Wi-Fi first, then run `apctl up`.\n"; return 3; }
+    if (!channel) { std::cerr << "Couldn't read the Wi-Fi channel. Reconnect to Wi-Fi, then retry `apctl up`.\n"; return 3; }
     if (!concurrent_capability()) { std::cerr << "This computer doesn't report support for Wi-Fi and hotspot at the same time.\n"; return 3; }
 
     constexpr std::string_view ap = "ap0";
@@ -605,7 +606,7 @@ int up() {
     if (existing.exit_code != 0) {
         const auto phy = run({"iw", "dev", *iface, "info"});
         const auto wiphy = field(phy.out, "\twiphy ");
-        if (!wiphy) { std::cerr << "Couldn't identify the Wi-Fi adapter. Run `hotspot status` and retry.\n"; return 3; }
+        if (!wiphy) { std::cerr << "Couldn't identify the Wi-Fi adapter. Run `apctl status` and retry.\n"; return 3; }
         if (!privileged({"iw", "phy", "phy" + *wiphy, "interface", "add", std::string(ap), "type", "__ap"})) return 1;
         state.interface_owned = true;
         if (!save_state(state)) { std::cerr << "Couldn't save hotspot setup. Check that your home folder is writable.\n"; return 1; }
@@ -641,7 +642,7 @@ int up() {
         const std::string band = std::stoi(*channel) <= 14 ? "bg" : "a";
         if (!command({"nmcli", "device", "wifi", "hotspot", "ifname", std::string(ap), "con-name", std::string(profile), "ssid", config->ssid, "band", band, "channel", *channel, "password", config->password})) return 1;
         const auto created_uuid = connection_uuid(profile);
-        if (!created_uuid) { std::cerr << "Hotspot started, but setup couldn't be saved. Run `hotspot status` before retrying.\n"; return 1; }
+        if (!created_uuid) { std::cerr << "Hotspot started, but setup couldn't be saved. Run `apctl status` before retrying.\n"; return 1; }
         current_uuid = *created_uuid;
         created_profile = true;
         state.profile_uuid = current_uuid;
@@ -649,7 +650,7 @@ int up() {
     }
     state.profile_uuid = current_uuid;
     state.profile_backend = "nmcli-hotspot-v1";
-    if (!save_state(state)) { std::cerr << "Hotspot started, but setup couldn't be saved. Run `hotspot status` before retrying.\n"; return 1; }
+    if (!save_state(state)) { std::cerr << "Hotspot started, but setup couldn't be saved. Run `apctl status` before retrying.\n"; return 1; }
     if (!created_profile) {
         const std::vector<std::vector<std::string>> settings = {
             {"nmcli", "connection", "modify", "uuid", current_uuid, "connection.interface-name", std::string(ap)},
@@ -700,7 +701,7 @@ int down() {
         std::cout << "Hotspot stopped.\n";
         return 0;
     }
-    std::cerr << "Hotspot stopped, but some cleanup didn't finish. Run `hotspot down` again.\n";
+    std::cerr << "Hotspot stopped, but some cleanup didn't finish. Run `apctl down` again.\n";
     return 1;
 }
 
@@ -719,6 +720,6 @@ int main(int argc, char** argv) {
     if (action == "change-password") return change_password();
     if (action == "change-ssid") return change_ssid();
     if (action == "down") return down();
-    std::cerr << "Unknown command: " << action << '\n';
+    std::cerr << "Unknown command: " << action << ". Run `apctl help` to see available commands.\n";
     return 2;
 }
