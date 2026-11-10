@@ -1,0 +1,12 @@
+# CMake and compiler output
+/build/
+/cmake-build-*/
+/CMakeUserPresets.json
+/compile_commands.json
+
+# IDE and editor files
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
