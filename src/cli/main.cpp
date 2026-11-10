@@ -43,12 +43,12 @@ void print_help() {
               << "  help                 Show this help (-h and --help also work)\n"
               << "  check                Check if this computer can share Wi-Fi\n"
               << "  status               Show Wi-Fi and hotspot status\n"
-              << "  gen [SSID]           Save a hotspot name and generate a password\n"
+              << "  gen [SSID]           Save an SSID and generate a password\n"
               << "  up                   Start the hotspot\n"
               << "  open                 Alias for up\n"
-              << "  show-password        Show hotspot name, password, and QR code\n"
+              << "  show-password        Show SSID, password, and QR code\n"
               << "  change-password      Prompt for a new hotspot password\n"
-              << "  change-ssid          Prompt for a new hotspot name\n"
+              << "  change-ssid          Prompt for a new SSID\n"
               << "  down                 Stop the hotspot\n"
               << "  tui                  Open the interactive terminal interface\n";
 }
@@ -97,9 +97,9 @@ int main(int argc, char** argv) {
         return report(service.change_password(*first));
     }
     if (action == "change-ssid") {
-        std::cout << "New hotspot name: " << std::flush;
+        std::cout << "New SSID: " << std::flush;
         std::string ssid;
-        if (!std::getline(std::cin, ssid)) { std::cerr << "Couldn't read the new hotspot name.\n"; return 1; }
+        if (!std::getline(std::cin, ssid)) { std::cerr << "Couldn't read the new SSID.\n"; return 1; }
         return report(service.change_ssid(std::move(ssid)));
     }
     std::cerr << "Unknown command: " << action << ". Run `apctl help` to see available commands.\n";

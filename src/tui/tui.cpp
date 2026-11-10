@@ -50,7 +50,7 @@ const Color kField = Color::RGB(250, 244, 249);   // input background
 const Color kFieldFocus = Color::RGB(255, 255, 255);
 const Color kDisabledFocus = Color::RGB(214, 200, 212);
 
-constexpr int kPanelWidth = 50;  // outer width, outline included
+constexpr int kPanelWidth = 50;  // minimum outer width, outline included
 constexpr int kMinCols = 54;
 constexpr int kMinRowsMenu = 21;
 constexpr int kMinRowsForm = 24;  // inputs are 5 rows tall each
@@ -236,21 +236,29 @@ Element too_small(const Dimensions& term, int min_rows) {
 
 Element result_popup(const OperationResult& result, Element ok_button) {
     const Dimensions term = Terminal::Size();
-    const int width = std::max(30, std::min(64, term.dimx - 6));  // inner width
     const Color accent = severity_color(result.severity);
 
-    Elements body = text_block(result.message);
+    const bool has_qr = result.credentials && !result.credentials->qr_text.empty();
+    Elements body;
+    if (!has_qr || result.message != "Hotspot credentials")
+        body = text_block(result.message);
+    int qr_width = 0;
+    std::vector<std::string> qr;
     if (result.credentials) {
         const auto& creds = *result.credentials;
         body.push_back(text("SSID:      " + creds.ssid) | color(kInk));
         body.push_back(text("Password:  " + creds.password) | color(kInk));
         if (!creds.qr_text.empty()) {
-            const std::vector<std::string> qr = split_lines(creds.qr_text);
-            int qr_width = 0;
+            qr = split_lines(creds.qr_text);
             for (const auto& line : qr) qr_width = std::max(qr_width, string_width(line));
-            const int rows_needed = static_cast<int>(qr.size()) + static_cast<int>(body.size()) + 8;
+        }
+    }
+    const int available_width = term.dimx - 6;
+    const int width = std::max(30, std::min(available_width, std::max(64, qr_width + 2)));
+    if (result.credentials && !result.credentials->qr_text.empty()) {
+            const int rows_needed = static_cast<int>(qr.size()) + static_cast<int>(body.size()) + 9;
             body.push_back(separator() | color(kLine));
-            if (qr_width <= width - 4 && rows_needed <= term.dimy) {
+            if (qr_width <= width - 2 && rows_needed <= term.dimy) {
                 // One text() per line: paragraph() would re-wrap and destroy the QR.
                 Elements qr_rows;
                 for (const auto& line : qr) qr_rows.push_back(text(line));
@@ -261,7 +269,6 @@ Element result_popup(const OperationResult& result, Element ok_button) {
                                          std::to_string(rows_needed) + " rows). Enlarge the window and try again.")
                                | color(kWarn));
             }
-        }
     }
 
     Elements rows;
@@ -429,9 +436,9 @@ int run() {
     });
     cancel_password = action_button("Cancel", close_dialog);
 
-    save_ssid = action_button("Save name", [&] {
+    save_ssid = action_button("Save SSID", [&] {
         if (model.ssid_input.empty() || model.ssid_input.size() > 32) {
-            model.form_error = "Name must be 1-32 characters.";
+            model.form_error = "SSID must be 1-32 characters.";
             return;
         }
         std::string value = std::move(model.ssid_input);
@@ -459,7 +466,7 @@ int run() {
         open_dialog(Dialog::password);
         password_input->TakeFocus();
     });
-    auto ssid_button = action_button("Change hotspot name", [&] {
+    auto ssid_button = action_button("Change hotspot SSID", [&] {
         close_dialog();
         open_dialog(Dialog::ssid);
         ssid_input->TakeFocus();
@@ -511,8 +518,12 @@ int run() {
 
     // ------------------------------------------------------ rendering
     // Inner width is kPanelWidth minus the two outline cells.
-    auto panel = [](Element content) {
-        return outline(padded(std::move(content)) | size(WIDTH, EQUAL, kPanelWidth - 2)
+    auto panel = [](Element content, int outer_width, int outer_height = 0) {
+        if (outer_height > 0) {
+            content = vbox({std::move(content), filler()})
+                      | size(HEIGHT, EQUAL, outer_height - 4);
+        }
+        return outline(padded(std::move(content)) | size(WIDTH, EQUAL, outer_width - 2)
                            | bgcolor(kPanel),
                        kLine);
     };
@@ -545,6 +556,10 @@ int run() {
         const Dimensions term = Terminal::Size();
         const int min_rows = in_form ? kMinRowsForm : kMinRowsMenu;
         if (term.dimx < kMinCols || term.dimy < min_rows) return too_small(term, min_rows);
+        const int menu_width = std::min(term.dimx - 4, std::max(kPanelWidth, term.dimx * 3 / 4));
+        const int menu_height = term.dimy >= kMinRowsMenu + 8
+            ? std::min(term.dimy - 3, term.dimy * 2 / 3)
+            : 0;
 
         Element content;
         if (model.dialog == Dialog::password) {
@@ -559,9 +574,9 @@ int run() {
             });
         } else if (model.dialog == Dialog::ssid) {
             content = vbox({
-                text("Change hotspot name") | bold | color(kTitle),
+                text("Change hotspot SSID") | bold | color(kTitle),
                 separator() | color(kLine),
-                labelled_input("New name", ssid_input),
+                labelled_input("New SSID", ssid_input),
                 form_error_line(),
                 save_ssid->Render(),
                 cancel_ssid->Render()
@@ -575,8 +590,8 @@ int run() {
                 status_line(model.status),
                 hbox({text("Connected devices  ") | color(kInk), text(clients) | color(kInk)}),
                 separator() | color(kLine),
-                text("Connections and hotspot actions") | bold | color(kInk),
-                action_list->Render()
+                action_list->Render() | size(WIDTH, EQUAL, menu_width - 4),
+                filler()
             });
         }
 
@@ -587,7 +602,10 @@ int run() {
         else hint = " ↑/↓ Navigate   Enter Select   Esc/q Quit   Mouse: click, scroll ";
         Element footer = hbox({text(hint) | color(kPanel), filler()}) | bgcolor(kInk);
 
-        Element base = vbox({filler(), panel(std::move(content)) | hcenter, filler(), footer})
+        const int panel_width = in_form ? kPanelWidth : menu_width;
+        const int panel_height = in_form ? 0 : menu_height;
+        Element base = vbox({filler(), panel(std::move(content), panel_width, panel_height) | hcenter,
+                             filler(), footer})
                        | bgcolor(kDesktop);
 
         if (model.busy) {

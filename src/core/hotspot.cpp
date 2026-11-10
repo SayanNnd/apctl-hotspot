@@ -322,13 +322,60 @@ std::optional<bool> restart_profile_if_active(std::string_view uuid, std::string
     return true;
 }
 
+std::string qr_from_nmcli_output(const std::string& output) {
+    std::istringstream lines(output);
+    std::string line;
+    std::string qr;
+    bool reading_qr = false;
+    while (std::getline(lines, line)) {
+        if (!reading_qr) {
+            if (line.find("\x1b[37;40") == std::string::npos) continue;
+            reading_qr = true;
+        }
+
+        std::string plain;
+        for (size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '\x1b' && i + 1 < line.size() && line[i + 1] == '[') {
+                i += 2;
+                while (i < line.size() && !(line[i] >= '@' && line[i] <= '~')) ++i;
+            } else if (line[i] != '\x0e' && line[i] != '\x0f' && line[i] != '\r') {
+                plain.push_back(line[i]);
+            }
+        }
+        if (plain.size() >= 2 && plain[0] == ' ' && plain[1] == ' ')
+            plain.erase(0, 2);
+
+        std::string row;
+        for (size_t i = 0; i < plain.size();) {
+            if (plain.compare(i, 3, "▄") == 0) {
+                row += "▀";
+                i += 3;
+            } else if (plain.compare(i, 3, "▀") == 0) {
+                row += "▄";
+                i += 3;
+            } else if (plain.compare(i, 3, "█") == 0) {
+                row.push_back(' ');
+                i += 3;
+            } else if (plain[i] == ' ') {
+                row += "█";
+                ++i;
+            } else {
+                row.push_back(plain[i++]);
+            }
+        }
+        if (!qr.empty()) qr.push_back('\n');
+        qr += row;
+    }
+    return qr;
+}
+
 std::optional<Credentials> load_credentials(bool with_qr) {
     const auto config = load_config();
     if (!config) return std::nullopt;
     Credentials credentials{config->ssid, config->password, {}};
     if (with_qr) {
-        const auto child = run_process({"nmcli", "device", "wifi", "show-password", "ifname", "ap0"});
-        if (child.exit_code == 0) credentials.qr_text = child.out;
+        const auto child = run_process({"nmcli", "--colors", "yes", "device", "wifi", "show-password", "ifname", "ap0"});
+        if (child.exit_code == 0) credentials.qr_text = qr_from_nmcli_output(child.out);
     }
     return credentials;
 }
@@ -376,7 +423,7 @@ OperationResult HotspotService::check() const {
 }
 
 OperationResult HotspotService::generate(std::string ssid) const {
-    if (!valid_ssid(ssid)) return result(Severity::error, "The hotspot name must be 1–32 characters on one line.", 2);
+    if (!valid_ssid(ssid)) return result(Severity::error, "The SSID must be 1–32 characters on one line.", 2);
     Config config{std::move(ssid), random_password()};
     if (config.password.size() != 16 || !save_config(config))
         return result(Severity::error, "Couldn't save hotspot details. Check that your home folder is writable.", 1);
@@ -422,30 +469,30 @@ OperationResult HotspotService::change_password(std::string password) const {
 }
 
 OperationResult HotspotService::change_ssid(std::string ssid) const {
-    if (!valid_ssid(ssid)) return result(Severity::error, "The hotspot name must be 1–32 characters on one line.", 2);
+    if (!valid_ssid(ssid)) return result(Severity::error, "The SSID must be 1–32 characters on one line.", 2);
     auto config = load_config();
     if (!config) return result(Severity::error, "No saved hotspot details. Generate them first.", 2);
     const auto previous = config->ssid;
     config->ssid = std::move(ssid);
-    if (!save_config(*config)) return result(Severity::error, "Couldn't save the new hotspot name.", 1);
+    if (!save_config(*config)) return result(Severity::error, "Couldn't save the new SSID.", 1);
 
     const auto state = load_state();
     if (state.profile_uuid.empty() || !connection_exists_uuid(state.profile_uuid))
-        return result(Severity::success, "Hotspot name saved. It will take effect the next time the hotspot starts.");
+        return result(Severity::success, "SSID saved. It will take effect the next time the hotspot starts.");
     std::string error;
     if (!command({"nmcli", "connection", "modify", "uuid", state.profile_uuid, "802-11-wireless.ssid", config->ssid}, error)) {
         config->ssid = previous;
         (void)save_config(*config);
-        return result(Severity::error, "Couldn't change the hotspot name. The previous name is still in use.", 1);
+        return result(Severity::error, "Couldn't change the SSID. The previous SSID is still in use.", 1);
     }
     const auto restarted = restart_profile_if_active(state.profile_uuid, error);
-    if (!restarted) return result(Severity::error, "New hotspot name saved, but the hotspot couldn't restart. " + error, 1);
+    if (!restarted) return result(Severity::error, "New SSID saved, but the hotspot couldn't restart. " + error, 1);
     if (*restarted) {
-        auto changed = result(Severity::success, "Hotspot name changed. Reconnect your devices.");
+        auto changed = result(Severity::success, "SSID changed. Reconnect your devices.");
         changed.credentials = load_credentials(true);
         return changed;
     }
-    return result(Severity::success, "Hotspot name changed. It will take effect the next time the hotspot starts.");
+    return result(Severity::success, "SSID changed. It will take effect the next time the hotspot starts.");
 }
 
 OperationResult HotspotService::start() const {
