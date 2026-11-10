@@ -53,7 +53,7 @@ const Color kDisabledFocus = Color::RGB(214, 200, 212);
 constexpr int kPanelWidth = 50;  // minimum outer width, outline included
 constexpr int kMinCols = 54;
 constexpr int kMinRowsMenu = 21;
-constexpr int kMinRowsForm = 24;  // inputs are 5 rows tall each
+constexpr int kMinRowsForm = 24;
 
 // A one-cell outline drawn with thin block glyphs placed on the INNER edge of
 // the ring cells. The ring keeps whatever background is underneath (backdrop or
@@ -518,29 +518,46 @@ int run() {
 
     // ------------------------------------------------------ rendering
     // Inner width is kPanelWidth minus the two outline cells.
-    auto panel = [](Element content, int outer_width, int outer_height = 0) {
-        if (outer_height > 0) {
-            content = vbox({std::move(content), filler()})
-                      | size(HEIGHT, EQUAL, outer_height - 4);
-        }
+    auto panel = [](Element content, int outer_width) {
         return outline(padded(std::move(content)) | size(WIDTH, EQUAL, outer_width - 2)
                            | bgcolor(kPanel),
                        kLine);
     };
-    // A 5-row input: one blank row above and below the text, filling its outline
-    // edge to edge. The outline turns accent-coloured while the field has focus.
+    // A compact, square input field with a thin border that accents on focus.
     auto field_box = [](const Component& input) -> Element {
         const bool focused = input->Focused();
-        Element row = hbox({text(" "), input->Render() | flex, text(" ")});
-        Element body = vbox({text(" "), std::move(row), text(" ")})
-                       | bgcolor(focused ? kFieldFocus : kField);
+        const Color field_color = focused ? kFieldFocus : kField;
+        constexpr int inner_width = kPanelWidth - 6;
+        Element background = text(std::string(static_cast<size_t>(inner_width), ' '))
+                             | bgcolor(field_color);
+        Element input_row = hbox({text(" ") | bgcolor(field_color),
+                                  input->Render() | size(WIDTH, EQUAL, inner_width - 2)
+                                      | bgcolor(field_color),
+                                  text(" ") | bgcolor(field_color)})
+                            | size(WIDTH, EQUAL, inner_width) | bgcolor(field_color);
+        Element body = dbox({std::move(background), std::move(input_row)})
+                       | size(WIDTH, EQUAL, inner_width) | size(HEIGHT, EQUAL, 1);
+        // outline() (not borderStyled) so the line sits on the inner edge of its
+        // ring cells and touches the field, exactly like the panel outline.
+        // borderStyled() draws mid-cell and left a gap of panel colour between
+        // the line and the field background.
         return outline(std::move(body), focused ? kAccent : kLine);
     };
+    // The label is set into the box's top edge like a fieldset title: a short
+    // stub of the line, a space, the label, a space, then the line carries on
+    // to the right edge. That removes the empty row between label and field
+    // while the box still reads as closed. The empty spacer leaves the first
+    // three cells (corner + two cells of line) untouched; the filler()s keep
+    // the label's colour/bold confined to its own cells.
     auto labelled_input = [&](const std::string& label, const Component& input) -> Element {
-        return vbox({text(label) | bold | color(kInk), field_box(input)});
+        return dbox({field_box(input),
+                     vbox({hbox({emptyElement() | size(WIDTH, EQUAL, 3),
+                                 text(" " + label + " ") | bold | color(kInk),
+                                 filler()}),
+                           filler()})});
     };
     auto form_error_line = [&]() -> Element {
-        if (model.form_error.empty()) return text(" ");
+        if (model.form_error.empty()) return emptyElement();
         return text(model.form_error) | color(kBad) | bold;
     };
 
@@ -557,10 +574,6 @@ int run() {
         const int min_rows = in_form ? kMinRowsForm : kMinRowsMenu;
         if (term.dimx < kMinCols || term.dimy < min_rows) return too_small(term, min_rows);
         const int menu_width = std::min(term.dimx - 4, std::max(kPanelWidth, term.dimx * 3 / 4));
-        const int menu_height = term.dimy >= kMinRowsMenu + 8
-            ? std::min(term.dimy - 3, term.dimy * 2 / 3)
-            : 0;
-
         Element content;
         if (model.dialog == Dialog::password) {
             content = vbox({
@@ -585,13 +598,12 @@ int run() {
             const std::string clients = model.status.hotspot_active
                 ? std::to_string(model.status.connected_devices) : "—";
             content = vbox({
-                text("apctl  /  Wi-Fi hotspot") | bold | color(kTitle),
+                text("apctl / Wi-Fi hotspot") | bold | color(kTitle),
                 separator() | color(kLine),
                 status_line(model.status),
                 hbox({text("Connected devices  ") | color(kInk), text(clients) | color(kInk)}),
                 separator() | color(kLine),
-                action_list->Render() | size(WIDTH, EQUAL, menu_width - 4),
-                filler()
+                action_list->Render() | size(WIDTH, EQUAL, menu_width - 4)
             });
         }
 
@@ -603,23 +615,38 @@ int run() {
         Element footer = hbox({text(hint) | color(kPanel), filler()}) | bgcolor(kInk);
 
         const int panel_width = in_form ? kPanelWidth : menu_width;
-        const int panel_height = in_form ? 0 : menu_height;
-        Element base = vbox({filler(), panel(std::move(content), panel_width, panel_height) | hcenter,
+        Element base = vbox({filler(), panel(std::move(content), panel_width) | hcenter,
                              filler(), footer})
                        | bgcolor(kDesktop);
 
         if (model.busy) {
             std::string dots(static_cast<size_t>((model.working_frame / 3) % 4), '.');
-            Elements lines{text(" "),
-                           hbox({text("  Working") | bold | color(kInk),
-                                 text(dots) | size(WIDTH, EQUAL, 3) | bold | color(kInk),
-                                 text("  ")})};
-            if (model.quit_after_work)
-                lines.push_back(text("  Quitting when finished ") | bold | color(kWarn));
-            lines.push_back(text(" "));
+            dots.resize(3, ' ');  // fixed slot, so the word never shifts as dots come and go
+            // ~20% larger box. A terminal can't scale its font, so the text is
+            // set in capitals (taller glyphs that fill their cell). Lines are
+            // centred by padding with spaces to a fixed inner width (no flex,
+            // so the box can't stretch). The 3-space prefix mirrors the dots
+            // slot, which keeps the word itself centred.
+            const int box_w = model.quit_after_work ? 30 : 17;
+            const auto centered = [&](const std::string& value, Color tone) -> Element {
+                const int total = std::max(0, box_w - static_cast<int>(value.size()));
+                const int left = total / 2;
+                return text(std::string(static_cast<size_t>(left), ' ') + value +
+                            std::string(static_cast<size_t>(total - left), ' '))
+                       | color(tone);
+            };
+            Elements lines;
+            if (model.quit_after_work) {
+                // Two lines in 4 rows: one blank row above and below.
+                lines = {text(" "), centered("   WORKING" + dots, kInk),
+                         centered("QUITTING WHEN FINISHED", kWarn), text(" ")};
+            } else {
+                // One line in 5 rows: two blank rows above and below.
+                lines = {text(" "), text(" "), centered("   WORKING" + dots, kInk),
+                         text(" "), text(" ")};
+            }
             // clear_under inside the outline: see result_popup().
-            Element busy_box = outline(vbox(std::move(lines)) | size(WIDTH, GREATER_THAN, 22)
-                                           | bgcolor(kPanel) | clear_under,
+            Element busy_box = outline(vbox(std::move(lines)) | bgcolor(kPanel) | clear_under,
                                        kAccent);
             return dbox({base | dim, busy_box | center}) | flex;
         }

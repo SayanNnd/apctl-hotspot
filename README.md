@@ -6,7 +6,7 @@ A terminal tool to start a Wi-Fi hotspot on Linux while staying connected to Wi-
 
 ## Preview
 
-Run `apctl tui` for a full-screen interface with separate core, CLI, and TUI code. It uses FTXUI, keeps the terminal responsive while NetworkManager actions run, and restores the terminal when you quit.
+Run `apctl tui` for a full-screen interface with separate core, CLI, and TUI code. It uses FTXUI, keeps the terminal responsive while NetworkManager actions run, and restores the terminal when you quit. The home panel grows with the terminal width; credential forms stay compact. Action output appears in a separate result dialog, and the centered Working dialog keeps a fixed size while its indicator animates.
 
 ## Install
 
@@ -53,7 +53,7 @@ apctl down
 apctl tui
 ```
 
-In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. Results appear in a centered, severity-colored popup; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows an animated working indicator. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
+In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. “Show password and QR code” and “Check Wi-Fi support” display their output in a separate, centered result dialog; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows a fixed-size animated Working dialog. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
 
 If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
 

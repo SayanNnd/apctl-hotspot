@@ -333,6 +333,7 @@ std::string qr_from_nmcli_output(const std::string& output) {
             reading_qr = true;
         }
 
+        const bool light_border_row = line.find("\x1b[0;37m") != std::string::npos;
         std::string plain;
         for (size_t i = 0; i < line.size(); ++i) {
             if (line[i] == '\x1b' && i + 1 < line.size() && line[i + 1] == '[') {
@@ -346,21 +347,29 @@ std::string qr_from_nmcli_output(const std::string& output) {
             plain.erase(0, 2);
 
         std::string row;
-        for (size_t i = 0; i < plain.size();) {
-            if (plain.compare(i, 3, "▄") == 0) {
-                row += "▀";
-                i += 3;
-            } else if (plain.compare(i, 3, "▀") == 0) {
-                row += "▄";
-                i += 3;
-            } else if (plain.compare(i, 3, "█") == 0) {
-                row.push_back(' ');
-                i += 3;
-            } else if (plain[i] == ' ') {
-                row += "█";
-                ++i;
-            } else {
-                row.push_back(plain[i++]);
+        if (light_border_row) {
+            size_t cells = 0;
+            for (unsigned char byte : plain) {
+                if ((byte & 0xC0) != 0x80) ++cells;
+            }
+            row.assign(cells, ' ');
+        } else {
+            for (size_t i = 0; i < plain.size();) {
+                if (plain.compare(i, 3, "▄") == 0) {
+                    row += "▀";
+                    i += 3;
+                } else if (plain.compare(i, 3, "▀") == 0) {
+                    row += "▄";
+                    i += 3;
+                } else if (plain.compare(i, 3, "█") == 0) {
+                    row.push_back(' ');
+                    i += 3;
+                } else if (plain[i] == ' ') {
+                    row += "█";
+                    ++i;
+                } else {
+                    row.push_back(plain[i++]);
+                }
             }
         }
         if (!qr.empty()) qr.push_back('\n');
