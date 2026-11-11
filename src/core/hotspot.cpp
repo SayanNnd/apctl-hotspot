@@ -2,12 +2,14 @@
 
 #include "process.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <string_view>
 #include <sys/stat.h>
@@ -21,7 +23,49 @@ namespace fs = std::filesystem;
 namespace apctl::core {
 namespace {
 
-struct Config { std::string ssid; std::string password; };
+struct Config {
+    std::string ssid;
+    std::string password;
+    BandPreference band = BandPreference::automatic;
+};
+
+const char* band_config_value(BandPreference band) {
+    switch (band) {
+        case BandPreference::ghz_2_4: return "2.4";
+        case BandPreference::ghz_5: return "5";
+        case BandPreference::automatic: return "auto";
+    }
+    return "auto";
+}
+
+const char* network_manager_band(BandPreference band) {
+    return band == BandPreference::ghz_2_4 ? "bg" : "a";
+}
+
+std::string channel_band_name(std::string_view channel) {
+    try {
+        return std::stoi(std::string(channel)) <= 14 ? "2.4 GHz" : "5 GHz";
+    } catch (...) {
+        return "unknown band";
+    }
+}
+
+const char* band_preference_name(BandPreference band) {
+    switch (band) {
+        case BandPreference::ghz_2_4: return "2.4 GHz";
+        case BandPreference::ghz_5: return "5 GHz";
+        case BandPreference::automatic: return "Auto";
+    }
+    return "Auto";
+}
+
+BandPreference channel_band(std::string_view channel) {
+    try {
+        return std::stoi(std::string(channel)) <= 14 ? BandPreference::ghz_2_4 : BandPreference::ghz_5;
+    } catch (...) {
+        return BandPreference::automatic;
+    }
+}
 
 struct FirewallState {
     bool dhcp = false;
@@ -91,6 +135,11 @@ std::optional<Config> load_config() {
         const auto value = line.substr(equal + 1);
         if (key == "ssid") config.ssid = value;
         else if (key == "password") config.password = value;
+        else if (key == "band") {
+            if (value == "2.4") config.band = BandPreference::ghz_2_4;
+            else if (value == "5") config.band = BandPreference::ghz_5;
+            else config.band = BandPreference::automatic;
+        }
     }
     if (config.ssid.empty() || config.password.size() < 8) return std::nullopt;
     return config;
@@ -105,7 +154,8 @@ bool save_config(const Config& config) {
     FILE* file = std::fopen(config_path().c_str(), "w");
     umask(old_mask);
     if (!file) return false;
-    const bool ok = std::fprintf(file, "ssid=%s\npassword=%s\n", config.ssid.c_str(), config.password.c_str()) > 0;
+    const bool ok = std::fprintf(file, "ssid=%s\npassword=%s\nband=%s\n", config.ssid.c_str(),
+                                 config.password.c_str(), band_config_value(config.band)) > 0;
     std::fclose(file);
     chmod(config_path().c_str(), 0600);
     return ok;
@@ -284,10 +334,124 @@ std::optional<std::string> connected_channel(const std::string& iface) {
     return std::nullopt;
 }
 
-bool concurrent_capability() {
-    const auto child = run_process({"iw", "list"});
-    return child.exit_code == 0 && child.out.find("#{ managed }") != std::string::npos &&
-           child.out.find("#{ AP") != std::string::npos && child.out.find("total <= 2") != std::string::npos;
+std::optional<std::string> phy_name(const std::string& iface) {
+    const auto child = run_process({"iw", "dev", iface, "info"});
+    if (child.exit_code != 0) return std::nullopt;
+    const auto index = field(child.out, "\twiphy ");
+    if (!index) return std::nullopt;
+    return "phy" + *index;
+}
+
+std::optional<std::string> phy_info(const std::string& iface) {
+    const auto phy = phy_name(iface);
+    if (!phy) return std::nullopt;
+    const auto child = run_process({"iw", "phy", *phy, "info"});
+    if (child.exit_code != 0) return std::nullopt;
+    return child.out;
+}
+
+bool combination_supports_ap_sta(const std::string& info, int minimum_channels) {
+    const std::regex channels_pattern(R"(#channels\s*<=\s*(\d+))");
+    const std::regex total_pattern(R"(total\s*<=\s*(\d+))");
+    const auto supports = [&](const std::string& block) {
+        if (block.find("#{ managed") == std::string::npos || block.find("#{ AP") == std::string::npos)
+            return false;
+        std::smatch match;
+        int channels = 1;
+        int total = 0;
+        if (std::regex_search(block, match, channels_pattern)) channels = std::stoi(match[1].str());
+        if (std::regex_search(block, match, total_pattern)) total = std::stoi(match[1].str());
+        return channels >= minimum_channels && total >= 2;
+    };
+
+    std::istringstream lines(info);
+    std::string line;
+    std::string block;
+    bool reading = false;
+    while (std::getline(lines, line)) {
+        if (!reading) {
+            if (line.find("valid interface combinations:") != std::string::npos) reading = true;
+            continue;
+        }
+        const std::string trimmed = trim(line);
+        if (trimmed.empty() || trimmed.rfind("Band ", 0) == 0) {
+            if (supports(block)) return true;
+            if (trimmed.rfind("Band ", 0) == 0) return false;
+            block.clear();
+            continue;
+        }
+        if (trimmed.front() == '*') {
+            if (supports(block)) return true;
+            block = trimmed;
+        } else if (!block.empty()) {
+            block += ' ' + trimmed;
+        }
+    }
+    return supports(block);
+}
+
+bool concurrent_capability(const std::string& iface) {
+    const auto info = phy_info(iface);
+    return info && combination_supports_ap_sta(*info, 1);
+}
+
+std::vector<std::string> usable_channels(const std::string& info, BandPreference band) {
+    std::vector<std::pair<int, int>> channels;
+    std::istringstream lines(info);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.find(" MHz [") == std::string::npos || line.find("(disabled)") != std::string::npos ||
+            line.find("(no IR)") != std::string::npos || line.find("(radar detection)") != std::string::npos)
+            continue;
+        std::istringstream values(line);
+        std::string marker;
+        int mhz = 0;
+        if (!(values >> marker >> mhz) || marker != "*") continue;
+        const auto open = line.find('[');
+        const auto close = line.find(']', open == std::string::npos ? 0 : open + 1);
+        if (open == std::string::npos || close == std::string::npos) continue;
+        int channel = 0;
+        try { channel = std::stoi(line.substr(open + 1, close - open - 1)); }
+        catch (...) { continue; }
+        const bool in_24 = mhz >= 2400 && mhz < 2500;
+        const bool in_5 = mhz >= 5000 && mhz < 5925;
+        if ((band == BandPreference::ghz_2_4 && in_24) || (band == BandPreference::ghz_5 && in_5))
+            channels.emplace_back(channel, mhz);
+    }
+    std::sort(channels.begin(), channels.end());
+    const std::vector<int> preferred = band == BandPreference::ghz_2_4
+        ? std::vector<int>{1, 6, 11} : std::vector<int>{36, 40, 44, 48};
+    std::vector<std::string> result;
+    for (int wanted : preferred) {
+        for (const auto& [channel, mhz] : channels) {
+            (void)mhz;
+            if (channel == wanted) result.push_back(std::to_string(channel));
+        }
+    }
+    for (const auto& [channel, mhz] : channels) {
+        (void)mhz;
+        const auto value = std::to_string(channel);
+        if (std::find(result.begin(), result.end(), value) == result.end()) result.push_back(value);
+    }
+    return result;
+}
+
+std::optional<std::string> select_hotspot_channel(const std::string& iface, const std::string& uplink_channel,
+                                                  BandPreference preference, std::string& error) {
+    const BandPreference target = preference == BandPreference::automatic ? channel_band(uplink_channel) : preference;
+    if (target == channel_band(uplink_channel)) return uplink_channel;
+
+    const auto info = phy_info(iface);
+    if (!info || !combination_supports_ap_sta(*info, 2)) {
+        error = "This adapter doesn't report support for keeping Wi-Fi connected while the hotspot uses a different channel. The requested band can't be used safely.";
+        return std::nullopt;
+    }
+    const auto channels = usable_channels(*info, target);
+    if (channels.empty()) {
+        error = "This adapter reports no currently usable hotspot channels in the requested band.";
+        return std::nullopt;
+    }
+    return channels.front();
 }
 
 std::string random_password() {
@@ -408,7 +572,10 @@ Status HotspotService::status() const {
     current.hotspot_active = ap.exit_code == 0 && state.exit_code == 0 && trim(state.out).rfind("100 ", 0) == 0;
     if (!current.hotspot_active) return current;
     if (const auto ssid = field(ap.out, "\tssid ")) current.hotspot_ssid = *ssid;
-    if (const auto channel = field(ap.out, "\tchannel ")) current.hotspot_channel = trim(channel->substr(0, channel->find(' ')));
+    if (const auto channel = field(ap.out, "\tchannel ")) {
+        current.hotspot_channel = trim(channel->substr(0, channel->find(' ')));
+        current.hotspot_band = channel_band_name(current.hotspot_channel);
+    }
     const auto stations = run_process({"iw", "dev", "ap0", "station", "dump"});
     if (stations.exit_code == 0) {
         std::istringstream lines(stations.out);
@@ -423,12 +590,22 @@ OperationResult HotspotService::check() const {
         return result(Severity::error, "Network settings aren't available right now.", 3);
     const auto iface = active_wifi();
     if (!iface) return result(Severity::error, "Connect to Wi-Fi first, then check again.", 3);
-    const bool supported = concurrent_capability();
+    const bool supported = concurrent_capability(*iface);
     const auto channel = connected_channel(*iface);
     if (!channel) return result(Severity::error, "Couldn't read the Wi-Fi channel. Reconnect and retry.", 3);
     if (!supported) return result(Severity::warning,
         "This adapter doesn't report support for Wi-Fi and hotspot at the same time. Runtime support can still vary.", 3);
-    return result(Severity::success, "Wi-Fi and hotspot concurrency is advertised on channel " + *channel + ".", 0);
+    const auto config = load_config();
+    if (config && config->band != BandPreference::automatic) {
+        std::string selection_error;
+        const auto selected = select_hotspot_channel(*iface, *channel, config->band, selection_error);
+        if (!selected) return result(Severity::warning, "Configured " +
+            std::string(band_preference_name(config->band)) + " band is not currently available: " + selection_error, 3);
+        return result(Severity::success, "Wi-Fi concurrency is advertised for " +
+            std::string(band_preference_name(config->band)) + " on channel " + *selected + ".", 0);
+    }
+    return result(Severity::success, "Wi-Fi and hotspot concurrency is advertised on " +
+                  channel_band_name(*channel) + " channel " + *channel + ".", 0);
 }
 
 OperationResult HotspotService::generate(std::string ssid) const {
@@ -504,6 +681,67 @@ OperationResult HotspotService::change_ssid(std::string ssid) const {
     return result(Severity::success, "SSID changed. It will take effect the next time the hotspot starts.");
 }
 
+OperationResult HotspotService::change_band(BandPreference band) const {
+    auto config = load_config();
+    if (!config) return result(Severity::error, "No saved hotspot details. Generate them first.", 2);
+    if (config->band == band)
+        return result(Severity::info, "Hotspot band is already set to " + std::string(band_preference_name(band)) + ".");
+
+    const auto state = load_state();
+    const bool owned_profile = !state.profile_uuid.empty() && connection_exists_uuid(state.profile_uuid);
+    std::optional<std::string> selected_channel;
+    if (const auto iface = active_wifi()) {
+        const auto uplink_channel = connected_channel(*iface);
+        if (!uplink_channel) return result(Severity::error, "Couldn't read the Wi-Fi channel. Reconnect and retry.", 3);
+        std::string selection_error;
+        selected_channel = select_hotspot_channel(*iface, *uplink_channel, band, selection_error);
+        if (!selected_channel) return result(Severity::error, selection_error, 3);
+    } else if (owned_profile) {
+        return result(Severity::error, "Connect to Wi-Fi before changing the band of an existing hotspot profile.", 3);
+    }
+
+    std::string old_channel;
+    if (owned_profile) {
+        const auto current = run_process({"nmcli", "-g", "802-11-wireless.channel", "connection", "show",
+                                          "uuid", state.profile_uuid});
+        if (current.exit_code != 0 || trim(current.out).empty())
+            return result(Severity::error, "Couldn't read the current hotspot channel. No changes were made.", 1);
+        old_channel = trim(current.out);
+        std::string error;
+        if (!command({"nmcli", "connection", "modify", "uuid", state.profile_uuid,
+                      "802-11-wireless.band", network_manager_band(channel_band(*selected_channel)),
+                      "802-11-wireless.channel", *selected_channel}, error))
+            return result(Severity::error, error, 1);
+    }
+
+    const BandPreference previous = config->band;
+    config->band = band;
+    if (!save_config(*config)) {
+        if (owned_profile) {
+            std::string ignored;
+            (void)command({"nmcli", "connection", "modify", "uuid", state.profile_uuid,
+                           "802-11-wireless.band", network_manager_band(channel_band(old_channel)),
+                           "802-11-wireless.channel", old_channel}, ignored, true);
+        }
+        config->band = previous;
+        return result(Severity::error, "Couldn't save the hotspot band preference.", 1);
+    }
+
+    if (!owned_profile)
+        return result(Severity::success, "Hotspot band preference saved as " +
+                      std::string(band_preference_name(band)) + ". It will take effect the next time the hotspot starts.");
+
+    std::string error;
+    const auto restarted = restart_profile_if_active(state.profile_uuid, error);
+    if (!restarted)
+        return result(Severity::error, "Band preference saved, but the hotspot couldn't restart. " + error, 1);
+    if (*restarted)
+        return result(Severity::success, "Hotspot band changed to " + std::string(band_preference_name(band)) +
+                      ". Reconnect your devices.");
+    return result(Severity::success, "Hotspot band preference saved as " +
+                  std::string(band_preference_name(band)) + ". It will take effect the next time the hotspot starts.");
+}
+
 OperationResult HotspotService::start() const {
     const auto config = load_config();
     if (!config) return result(Severity::error, "Hotspot details aren't set up yet. Generate them first.", 2);
@@ -524,10 +762,15 @@ OperationResult HotspotService::start() const {
 
     const auto iface = active_wifi();
     if (!iface) return result(Severity::error, "Connect to Wi-Fi first, then start the hotspot.", 3);
-    const auto channel = connected_channel(*iface);
-    if (!channel) return result(Severity::error, "Couldn't read the Wi-Fi channel. Reconnect and retry.", 3);
-    if (!concurrent_capability()) return result(Severity::error,
+    const auto uplink_channel = connected_channel(*iface);
+    if (!uplink_channel) return result(Severity::error, "Couldn't read the Wi-Fi channel. Reconnect and retry.", 3);
+    if (!concurrent_capability(*iface)) return result(Severity::error,
         "This computer doesn't report support for Wi-Fi and hotspot at the same time.", 3);
+
+    std::string selection_error;
+    const auto channel = select_hotspot_channel(*iface, *uplink_channel, config->band, selection_error);
+    if (!channel) return result(Severity::error, selection_error, 3);
+    const std::string band = network_manager_band(channel_band(*channel));
 
     constexpr std::string_view ap = "ap0";
     constexpr std::string_view profile = "apctl-hotspot";
@@ -571,7 +814,6 @@ OperationResult HotspotService::start() const {
     } else {
         if (connection_name_exists(profile))
             return result(Severity::error, "A hotspot with this app's name already exists outside the app. Rename or remove it, then retry.", 3);
-        const std::string band = std::stoi(*channel) <= 14 ? "bg" : "a";
         if (!command({"nmcli", "device", "wifi", "hotspot", "ifname", std::string(ap), "con-name", std::string(profile),
                       "ssid", config->ssid, "band", band, "channel", *channel, "password", config->password}, error))
             return result(Severity::error, error, 1);
@@ -589,7 +831,7 @@ OperationResult HotspotService::start() const {
         const std::vector<std::vector<std::string>> settings = {
             {"nmcli", "connection", "modify", "uuid", current_uuid, "connection.interface-name", std::string(ap)},
             {"nmcli", "connection", "modify", "uuid", current_uuid, "802-11-wireless.mode", "ap"},
-            {"nmcli", "connection", "modify", "uuid", current_uuid, "802-11-wireless.band", std::stoi(*channel) <= 14 ? "bg" : "a"},
+            {"nmcli", "connection", "modify", "uuid", current_uuid, "802-11-wireless.band", band},
             {"nmcli", "connection", "modify", "uuid", current_uuid, "802-11-wireless.channel", *channel},
             {"nmcli", "connection", "modify", "uuid", current_uuid, "802-11-wireless.ssid", config->ssid},
             {"nmcli", "connection", "modify", "uuid", current_uuid, "wifi-sec.psk", config->password},

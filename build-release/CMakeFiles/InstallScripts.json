@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/cmake_install.cmake",
+		"/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-build/cmake_install.cmake",
+		"/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-build/examples/cmake_install.cmake",
+		"/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-build/doc/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

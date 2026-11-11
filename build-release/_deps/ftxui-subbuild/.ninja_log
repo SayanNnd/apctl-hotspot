@@ -1,0 +1,21 @@
+# ninja log v7
+0	15	1794355519904346846	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-mkdir	3e4e6aa721490983
+0	15	1794355519904346846	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-mkdir	3e4e6aa721490983
+16	7296	1794355527185347477	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-download	d30e0b7abdf4446c
+16	7296	1794355527185347477	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-download	d30e0b7abdf4446c
+7296	7311	1794355527185347477	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-update	c8d3d680199c82a
+7296	7311	1794355527185347477	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-update	c8d3d680199c82a
+7311	7326	1794355527214347480	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-patch	7fa3b8d9f96622a
+7311	7326	1794355527214347480	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-patch	7fa3b8d9f96622a
+7326	7340	1794355527229347481	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-configure	9b701a208149f6a0
+7326	7340	1794355527229347481	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-configure	9b701a208149f6a0
+7340	7354	1794355527242347482	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-build	6d05d18f9c1d8b92
+7340	7354	1794355527242347482	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-build	6d05d18f9c1d8b92
+7354	7367	1794355527256347483	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-install	854194c8a38f6d8c
+7354	7367	1794355527256347483	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-install	854194c8a38f6d8c
+7367	7379	1794355527268347484	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-test	15901d0b047a6393
+7367	7379	1794355527268347484	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-test	15901d0b047a6393
+7379	7399	1794355527288347486	CMakeFiles/ftxui-populate-complete	8de97e0bd0d92054
+7379	7399	1794355527288347486	ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-done	8de97e0bd0d92054
+7379	7399	1794355527288347486	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/CMakeFiles/ftxui-populate-complete	8de97e0bd0d92054
+7379	7399	1794355527288347486	/home/sayannandi/Documents/Larp/Caelestia-Hotspot/build-release/_deps/ftxui-subbuild/ftxui-populate-prefix/src/ftxui-populate-stamp/ftxui-populate-done	8de97e0bd0d92054

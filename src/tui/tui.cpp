@@ -29,6 +29,7 @@ namespace apctl::tui {
 namespace {
 using namespace ftxui;
 using apctl::core::HotspotService;
+using apctl::core::BandPreference;
 using apctl::core::OperationResult;
 using apctl::core::Severity;
 using apctl::core::Status;
@@ -131,9 +132,10 @@ Element padded(Element child) {
 constexpr int kPageActions = 0;
 constexpr int kPagePassword = 1;
 constexpr int kPageSsid = 2;
-constexpr int kPageResult = 3;
+constexpr int kPageBand = 3;
+constexpr int kPageResult = 4;
 
-enum class Dialog { none, result, password, ssid };
+enum class Dialog { none, result, password, ssid, band };
 
 struct Completion {
     OperationResult operation;
@@ -306,6 +308,7 @@ int run() {
     // between them before every component has been built.
     Component ssid_input, password_input, confirm_input;
     Component save_password, cancel_password, save_ssid, cancel_ssid, ok_button;
+    Component auto_band_button, band_24_button, band_5_button;
 
     // ------------------------------------------------------ state helpers
     auto clear_secrets = [&] {
@@ -324,6 +327,7 @@ int run() {
         switch (dialog) {
             case Dialog::password: model.page = kPagePassword; break;
             case Dialog::ssid: model.page = kPageSsid; break;
+            case Dialog::band: model.page = kPageBand; break;
             case Dialog::result: model.page = kPageResult; break;
             case Dialog::none: model.page = kPageActions; break;
         }
@@ -471,6 +475,20 @@ int run() {
         open_dialog(Dialog::ssid);
         ssid_input->TakeFocus();
     });
+    auto_band_button = action_button("Auto", [&] {
+        launch([&] { return service.change_band(BandPreference::automatic); });
+    });
+    band_24_button = action_button("2.4 GHz", [&] {
+        launch([&] { return service.change_band(BandPreference::ghz_2_4); });
+    });
+    band_5_button = action_button("5 GHz", [&] {
+        launch([&] { return service.change_band(BandPreference::ghz_5); });
+    });
+    auto change_band_button = action_button("Change band", [&] {
+        close_dialog();
+        open_dialog(Dialog::band);
+        auto_band_button->TakeFocus();
+    });
     auto refresh_button = action_button("Refresh status", [&] {
         launch([&] { return OperationResult{Severity::success, 0, "Status refreshed.", std::nullopt}; });
     });
@@ -509,12 +527,13 @@ int run() {
 
     // ------------------------------------------------------ pages
     auto action_list = Container::Vertical({start_button, stop_button, check_button,
-        credentials_button, password_button, ssid_button, refresh_button, quit_button});
+        credentials_button, password_button, ssid_button, change_band_button, refresh_button, quit_button});
     auto password_form = Container::Vertical({password_input, confirm_input, save_password, cancel_password});
     auto ssid_form = Container::Vertical({ssid_input, save_ssid, cancel_ssid});
+    auto band_choices = Container::Vertical({auto_band_button, band_24_button, band_5_button});
     auto result_page = Container::Vertical({ok_button});
-    // Order must match kPageActions / kPagePassword / kPageSsid / kPageResult.
-    auto pages = Container::Tab({action_list, password_form, ssid_form, result_page}, &model.page);
+    // Order must match kPageActions / kPagePassword / kPageSsid / kPageBand / kPageResult.
+    auto pages = Container::Tab({action_list, password_form, ssid_form, band_choices, result_page}, &model.page);
 
     // ------------------------------------------------------ rendering
     // Inner width is kPanelWidth minus the two outline cells.
@@ -609,6 +628,7 @@ int run() {
 
         std::string hint;
         if (model.busy) hint = " Working...   Ctrl+C or q quits when it finishes ";
+        else if (model.dialog == Dialog::band) hint = " ↑/↓ Choose band   Enter Select   Esc Cancel ";
         else if (model.dialog == Dialog::result) hint = " Enter / Esc Close   Click OK ";
         else if (in_form) hint = " Tab / ↑↓ Move   Enter Select   Esc Cancel ";
         else hint = " ↑/↓ Navigate   Enter Select   Esc/q Quit   Mouse: click, scroll ";
@@ -650,6 +670,19 @@ int run() {
                                        kAccent);
             return dbox({base | dim, busy_box | center}) | flex;
         }
+        if (model.dialog == Dialog::band) {
+            Element band_popup = outline(
+                padded(vbox({
+                    text("Change hotspot band") | bold | color(kTitle),
+                    separator() | color(kLine),
+                    text("Auto follows the Wi-Fi uplink.") | color(kInk),
+                    auto_band_button->Render(),
+                    band_24_button->Render(),
+                    band_5_button->Render()
+                })) | size(WIDTH, EQUAL, 32) | bgcolor(kPanel) | clear_under,
+                kAccent);
+            return dbox({base | dim, band_popup | center}) | flex;
+        }
         if (model.dialog == Dialog::result) {
             return dbox({base | dim, result_popup(model.result, ok_button->Render()) | center}) | flex;
         }
@@ -675,6 +708,10 @@ int run() {
         if (model.dialog == Dialog::password || model.dialog == Dialog::ssid) {
             if (event == Event::Escape) { close_dialog(); return true; }
             return false;  // typing goes to the inputs
+        }
+        if (model.dialog == Dialog::band) {
+            if (is_quit_key) { close_dialog(); return true; }
+            return false;  // Up/Down, Enter, and mouse input go to the band choices.
         }
         if (is_quit_key) {
             screen.Exit();

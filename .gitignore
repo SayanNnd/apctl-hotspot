@@ -1,5 +1,6 @@
 # CMake and compiler output
 /build/
+/build-release/
 /cmake-build-*/
 /CMakeUserPresets.json
 /compile_commands.json

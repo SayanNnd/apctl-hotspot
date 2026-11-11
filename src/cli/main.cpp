@@ -49,8 +49,16 @@ void print_help() {
               << "  show-password        Show SSID, password, and QR code\n"
               << "  change-password      Prompt for a new hotspot password\n"
               << "  change-ssid          Prompt for a new SSID\n"
+              << "  change-band <band>   Set hotspot band: auto, 2.4, or 5\n"
               << "  down                 Stop the hotspot\n"
               << "  tui                  Open the interactive terminal interface\n";
+}
+
+std::optional<apctl::core::BandPreference> parse_band(std::string_view value) {
+    if (value == "auto") return apctl::core::BandPreference::automatic;
+    if (value == "2.4") return apctl::core::BandPreference::ghz_2_4;
+    if (value == "5") return apctl::core::BandPreference::ghz_5;
+    return std::nullopt;
 }
 
 int report(apctl::core::OperationResult result) {
@@ -80,7 +88,10 @@ int main(int argc, char** argv) {
         if (!state.hotspot_active) std::cout << "Hotspot: stopped\n";
         else {
             std::cout << "Hotspot: active (" << state.hotspot_ssid << ')';
-            if (!state.hotspot_channel.empty()) std::cout << " on channel " << state.hotspot_channel;
+            if (!state.hotspot_channel.empty()) {
+                if (!state.hotspot_band.empty()) std::cout << " on " << state.hotspot_band;
+                std::cout << " channel " << state.hotspot_channel;
+            }
             std::cout << "\nConnected devices: " << state.connected_devices << '\n';
         }
         return 0;
@@ -101,6 +112,18 @@ int main(int argc, char** argv) {
         std::string ssid;
         if (!std::getline(std::cin, ssid)) { std::cerr << "Couldn't read the new SSID.\n"; return 1; }
         return report(service.change_ssid(std::move(ssid)));
+    }
+    if (action == "change-band") {
+        if (argc != 3) {
+            std::cerr << "Usage: apctl change-band <auto|2.4|5>\n";
+            return 2;
+        }
+        const auto band = parse_band(argv[2]);
+        if (!band) {
+            std::cerr << "Choose `auto`, `2.4`, or `5` for the hotspot band.\n";
+            return 2;
+        }
+        return report(service.change_band(*band));
     }
     std::cerr << "Unknown command: " << action << ". Run `apctl help` to see available commands.\n";
     return 2;

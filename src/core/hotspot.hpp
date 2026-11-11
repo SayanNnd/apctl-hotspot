@@ -6,6 +6,7 @@
 namespace apctl::core {
 
 enum class Severity { info, success, warning, error };
+enum class BandPreference { automatic, ghz_2_4, ghz_5 };
 
 struct Credentials {
     std::string ssid;
@@ -26,6 +27,7 @@ struct Status {
     std::string wifi_connection;
     bool hotspot_active = false;
     std::string hotspot_ssid;
+    std::string hotspot_band;
     std::string hotspot_channel;
     int connected_devices = 0;
 };
@@ -40,6 +42,7 @@ public:
     OperationResult show_credentials() const;
     OperationResult change_password(std::string password) const;
     OperationResult change_ssid(std::string ssid) const;
+    OperationResult change_band(BandPreference band) const;
 };
 
 }  // namespace apctl::core

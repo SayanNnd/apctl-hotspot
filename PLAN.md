@@ -11,6 +11,7 @@ Build `apctl`, a terminal tool to start a Wi-Fi hotspot on Linux while staying c
 - UFW DHCP, DNS, and forwarding rules with ownership-aware cleanup: implemented for the tested setup.
 - Credential QR output and user-friendly CLI messages: implemented.
 - Full-screen FTXUI TUI with mouse support, separate result dialogs, asynchronous backend actions, password/SSID forms, and an animated fixed-size Working dialog: implemented.
+- CLI hotspot band preference (`auto`, `2.4`, `5`), band-aware preflight, and active profile restart: implemented; alternate-band runtime support still requires hardware verification.
 - Build: C++17 with CMake/Ninja.
 
 ## Verified acceptance scenario
@@ -22,7 +23,7 @@ On the tested CachyOS laptop with RTL8852CE, the laptop stays connected to Wi-Fi
 1. Test `apctl` on more adapters and Linux distributions.
 2. Add firewalld support and make firewall integration clearer for other systems.
 3. Add fixture-based tests for command parsing and state handling.
-4. Continue refining TUI presentation and accessibility based on runtime feedback.
+4. Verify forced alternate-band behavior on adapters that advertise multi-channel station/AP support.
 5. Package and publish `apctl-hotspot` after portability testing.
 
 ## Known limits

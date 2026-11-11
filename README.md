@@ -38,6 +38,7 @@ sudo cmake --install build --prefix /usr/local
 | `show-password` | `apctl show-password` — display the hotspot name, password, and QR code. |
 | `change-password` | `apctl change-password` — securely prompt for and confirm a new password. |
 | `change-ssid` | `apctl change-ssid` — prompt for a new hotspot name. |
+| `change-band` | `apctl change-band <auto|2.4|5>` — select automatic, 2.4 GHz, or 5 GHz hotspot band. |
 | `down` | `apctl down` — stop the app-managed hotspot and clean up its recorded rules. |
 | `tui` | `apctl tui` — open the full-screen interactive terminal interface. |
 
@@ -46,6 +47,7 @@ sudo cmake --install build --prefix /usr/local
 ```sh
 apctl check
 apctl gen "My Hotspot"
+apctl change-band auto
 apctl up
 # Later:
 apctl down
@@ -53,9 +55,11 @@ apctl down
 apctl tui
 ```
 
-In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. “Show password and QR code” and “Check Wi-Fi support” display their output in a separate, centered result dialog; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows a fixed-size animated Working dialog. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
+In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. “Change band” opens a dialog with Auto, 2.4 GHz, and 5 GHz choices; Auto follows the Wi-Fi uplink. “Show password and QR code” and “Check Wi-Fi support” display their output in a separate, centered result dialog; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows a fixed-size animated Working dialog. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
 
 If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
+
+`change-band` saves a band preference in the user configuration. `auto` follows the connected Wi-Fi channel and remains the default. A forced band uses that channel when the uplink is already on the requested band. Using a different band while preserving the uplink requires the adapter and driver to advertise concurrent operation on separate channels and to report a currently usable AP channel. The command refuses the request when those checks fail; it does not switch or disconnect the uplink. Changing the band while the app-managed hotspot is active restarts it, so clients need to reconnect. `check` evaluates the saved forced-band preference when one is set. Only 2.4 GHz and 5 GHz are supported; 6 GHz is out of scope.
 
 ## Authorization prompts and cleanup
 
@@ -76,7 +80,7 @@ The CLI exits after `apctl up`, but the hotspot keeps running. Closing the termi
 
 - The adapter and driver must support concurrent Wi-Fi client and hotspot modes. `apctl check` is only a preflight check; a real client connection is the proof.
 - The locally administered AP MAC was validated on the tested adapter; behavior on other drivers is unverified.
-- While sharing Wi-Fi from one radio, the hotspot must use the uplink's channel.
+- By default, a one-radio hotspot follows the uplink's channel. A forced band on a different channel requires driver-reported multi-channel station/AP support and an allowed AP frequency; this remains adapter and regulatory-domain dependent.
 - Firewall setup currently handles UFW rules. Other firewall managers may need separate integration.
 - Starting the hotspot can prompt for system authorization through `pkexec`.
 - The current build passes the hotspot password to NetworkManager as a process argument. Other local users may be able to inspect it while the command runs.
