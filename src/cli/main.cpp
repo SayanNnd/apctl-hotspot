@@ -1,4 +1,5 @@
 #include "../core/hotspot.hpp"
+#include "../core/process.hpp"
 #include "../tui/tui.hpp"
 
 #include <fcntl.h>
@@ -74,6 +75,7 @@ int main(int argc, char** argv) {
     if (argc < 2) { print_help(); return 2; }
     const std::string_view action(argv[1]);
     if (action == "help" || action == "--help" || action == "-h") { print_help(); return 0; }
+    if (action == "--privileged-helper") return apctl::core::run_privileged_helper(argc, argv);
     if (action == "tui") return apctl::tui::run();
 
     HotspotService service;

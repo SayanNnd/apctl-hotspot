@@ -12,5 +12,6 @@ struct ProcessResult {
 };
 
 ProcessResult run_process(const std::vector<std::string>& args);
+int run_privileged_helper(int argc, char* const argv[]);
 
 }  // namespace apctl::core

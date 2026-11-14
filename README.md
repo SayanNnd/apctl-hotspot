@@ -65,7 +65,7 @@ If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generate
 
 ## Authorization prompts and cleanup
 
-Starting a hotspot may show more than one system password prompt. These are normal `pkexec` authorization prompts for privileged setup steps: creating and preparing the extra Wi-Fi interface, and—when UFW is active—adding the firewall rules needed for client DHCP, DNS, and internet forwarding. The prompts themselves are harmless: they do not change your login password or install software. Approving them permits those specific network changes. The app does not read or save your system password. Depending on your desktop's authorization policy, it may reuse a recent approval or prompt again for another step.
+`apctl` groups its privileged interface and UFW setup into one `pkexec` request for each hotspot start, and its cleanup into one request for each stop. Your desktop or NetworkManager may still request authorization separately under local policy. Approval is not made permanent: apctl never stores the system password or changes Polkit policy, so later operations can require authorization again.
 
 The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. Your existing Wi-Fi connection and unrelated firewall rules are left in place.
 

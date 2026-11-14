@@ -353,10 +353,48 @@ bool command(const std::vector<std::string>& args, std::string& error, bool quie
     return false;
 }
 
-bool privileged(const std::vector<std::string>& args, std::string& error, ProcessResult* process_result = nullptr) {
-    std::vector<std::string> full{"pkexec"};
+ProcessResult privileged_batch(const std::vector<std::string>& args, std::string& error) {
+    std::error_code ec;
+    const auto executable = fs::canonical("/proc/self/exe", ec);
+    if (ec) {
+        error = "Couldn't locate apctl to run its authorized setup helper.";
+        return {-1, {}, error};
+    }
+    std::vector<std::string> full{"pkexec", executable.string(), "--privileged-helper"};
     full.insert(full.end(), args.begin(), args.end());
-    return command(full, error, false, process_result);
+    const auto child = run_process(full);
+    if (child.exit_code == 0) return child;
+
+    std::string detail = child.err;
+    std::transform(detail.begin(), detail.end(), detail.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    const std::string authorization_action = !args.empty() && args.front() == "stop"
+        ? "hotspot cleanup" : ( !args.empty() && args.front() == "interface-prepare"
+            ? "hotspot restart" : "hotspot setup");
+    if (detail.find("request dismissed") != std::string::npos)
+        error = "Authorization for " + authorization_action + " was dismissed. Approve the prompt and retry.";
+    else if (child.out.find("APCTL_SKIP") != std::string::npos)
+        error = "A matching firewall rule appeared during setup. It was left unowned; inspect UFW and retry.";
+    else if (child.out.find("APCTL_FAIL interface-create") != std::string::npos)
+        error = "Couldn't create the hotspot interface. Check Wi-Fi and retry.";
+    else if (child.out.find("APCTL_FAIL dhcp") != std::string::npos ||
+             child.out.find("APCTL_FAIL dns") != std::string::npos ||
+             child.out.find("APCTL_FAIL route") != std::string::npos)
+        error = "Couldn't add a required UFW rule. Check UFW and retry.";
+    else if (child.out.find("APCTL_FAIL networkmanager") != std::string::npos)
+        error = "Couldn't prepare the hotspot interface for NetworkManager.";
+    else if (!detail.empty() && (detail.find("not authorized") != std::string::npos ||
+                                 detail.find("authentication agent") != std::string::npos ||
+                                 detail.find("password is required") != std::string::npos))
+        error = "System authorization is required. Approve the prompt and retry.";
+    else
+        error = "A privileged hotspot setup step couldn't complete. Check system settings and retry.";
+    return child;
+}
+
+bool helper_completed(const ProcessResult& child, std::string_view name) {
+    return child.out.find("APCTL_OK " + std::string(name) + "\n") != std::string::npos;
 }
 
 enum class UfwRulePresence { missing, present, unreadable };
@@ -380,44 +418,6 @@ UfwRulePresence ufw_rule_presence(const std::vector<std::string>& rule) {
     return rules.bad() ? UfwRulePresence::unreadable : UfwRulePresence::missing;
 }
 
-bool add_ufw_rule(const std::vector<std::string>& rule, bool& owned, std::string& error) {
-    const auto presence = ufw_rule_presence(rule);
-    if (presence == UfwRulePresence::unreadable) {
-        error = "Couldn't inspect UFW's IPv4 rules. No firewall changes were made.";
-        return false;
-    }
-    if (presence == UfwRulePresence::present) return true;
-
-    ProcessResult child;
-    if (!privileged(rule, error, &child)) return false;
-    std::string detail = child.out + child.err;
-    std::transform(detail.begin(), detail.end(), detail.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    if (detail.find("skipping adding existing rule") != std::string::npos) {
-        error = "A matching UFW rule appeared while setup was running. It was left unowned; retry the start after checking the firewall.";
-        return false;
-    }
-    owned = true;
-    return true;
-}
-
-bool remove_ufw_rule(const std::vector<std::string>& rule, bool& owned, std::string& error) {
-    if (!owned) return true;
-    const auto presence = ufw_rule_presence(rule);
-    if (presence == UfwRulePresence::unreadable) {
-        error = "Couldn't inspect UFW's IPv4 rules. The recorded firewall rule was left unchanged.";
-        return false;
-    }
-    if (presence == UfwRulePresence::missing) {
-        owned = false;
-        return true;
-    }
-    if (!privileged(rule, error)) return false;
-    owned = false;
-    return true;
-}
-
 enum class UfwState { enabled, disabled, unavailable };
 
 UfwState ufw_state(std::string& error) {
@@ -436,15 +436,35 @@ UfwState ufw_state(std::string& error) {
     return UfwState::unavailable;
 }
 
-bool configure_firewall(FirewallState& state, std::string_view ap, std::string_view uplink, std::string& error) {
+struct FirewallAddPlan {
+    bool dhcp = false;
+    bool dns = false;
+    bool route = false;
+};
+
+std::optional<FirewallAddPlan> firewall_add_plan(std::string_view ap, std::string_view uplink,
+                                                  std::string& error) {
     error.clear();
     const auto version = run_process({"ufw", "--version"});
-    if (version.exit_code != 0) return true;  // UFW is not installed; other firewalls are not managed here.
-    if (ufw_state(error) == UfwState::disabled) return true;
-    if (!error.empty()) return false;
-    return add_ufw_rule({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "67", "proto", "udp"}, state.dhcp, error) && save_state(state) &&
-           add_ufw_rule({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "53", "proto", "udp"}, state.dns, error) && save_state(state) &&
-           add_ufw_rule({"ufw", "route", "allow", "in", "on", std::string(ap), "out", "on", std::string(uplink), "from", "10.42.0.0/24", "to", "any"}, state.route, error) && save_state(state);
+    if (version.exit_code != 0) return FirewallAddPlan{};  // Other firewalls are not managed here.
+    if (ufw_state(error) == UfwState::disabled) return FirewallAddPlan{};
+    if (!error.empty()) return std::nullopt;
+
+    FirewallAddPlan plan;
+    const auto inspect = [&](std::vector<std::string> rule, bool& add) {
+        const auto presence = ufw_rule_presence(rule);
+        if (presence == UfwRulePresence::unreadable) {
+            error = "Couldn't inspect UFW's IPv4 rules. No firewall changes were made.";
+            return false;
+        }
+        add = presence == UfwRulePresence::missing;
+        return true;
+    };
+    if (!inspect({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "67", "proto", "udp"}, plan.dhcp) ||
+        !inspect({"ufw", "allow", "in", "on", std::string(ap), "to", "any", "port", "53", "proto", "udp"}, plan.dns) ||
+        !inspect({"ufw", "route", "allow", "in", "on", std::string(ap), "out", "on", std::string(uplink), "from", "10.42.0.0/24", "to", "any"}, plan.route))
+        return std::nullopt;
+    return plan;
 }
 
 std::string nordvpn_firewall_message(const NordVpnInfo& info) {
@@ -494,30 +514,10 @@ bool wait_until_available(std::string_view iface) {
     return false;
 }
 
-std::string random_mac() { return "02:88:cd:08:b8:c8"; }
-
 bool prepare_owned_ap(std::string& error) {
     constexpr std::string_view ap = "ap0";
-    if (!command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, error, true)) {
-        error = "Couldn't prepare Wi-Fi for the hotspot. Refresh status and retry.";
-        return false;
-    }
-    if (!privileged({"ip", "link", "set", "dev", std::string(ap), "down"}, error)) {
-        error = "Couldn't bring the hotspot interface down. " + error;
-        return false;
-    }
-    if (!privileged({"iw", "dev", std::string(ap), "set", "type", "__ap"}, error)) {
-        error = "Couldn't prepare the hotspot interface for AP mode. " + error;
-        return false;
-    }
-    if (!privileged({"ip", "link", "set", "dev", std::string(ap), "address", random_mac()}, error)) {
-        error = "Couldn't set the hotspot interface address. " + error;
-        return false;
-    }
-    if (!command({"nmcli", "device", "set", std::string(ap), "managed", "yes"}, error)) {
-        error = "Couldn't return the hotspot interface to NetworkManager. " + error;
-        return false;
-    }
+    const auto child = privileged_batch({"interface-prepare"}, error);
+    if (child.exit_code != 0) return false;
     if (!wait_until_available(ap)) {
         error = "Wi-Fi isn't ready to start the hotspot. Refresh status and retry.";
         return false;
@@ -1049,12 +1049,25 @@ OperationResult HotspotService::start() const {
                 return result(Severity::error,
                     "Hotspot is running, but its Wi-Fi connection couldn't be identified to finish sharing setup.", 1);
             std::string firewall_error;
-            if (!configure_firewall(state, "ap0", state.uplink, firewall_error))
+            const auto plan = firewall_add_plan("ap0", state.uplink, firewall_error);
+            if (!plan)
                 return result(Severity::error,
                     "Hotspot is running, but firewall setup couldn't be completed. " + firewall_error, 1);
             if (!save_state(state))
                 return result(Severity::error,
-                    "Hotspot is running, but its setup state couldn't be saved. Run `apctl up` again to retry.", 1);
+                    "Hotspot is running, but its setup state couldn't be saved. No firewall changes were made.", 1);
+            if (plan->dhcp || plan->dns || plan->route) {
+                const auto child = privileged_batch({"firewall-add", plan->dhcp ? "1" : "0", plan->dns ? "1" : "0",
+                                                     plan->route ? "1" : "0", state.uplink}, firewall_error);
+                if (helper_completed(child, "dhcp")) state.dhcp = true;
+                if (helper_completed(child, "dns")) state.dns = true;
+                if (helper_completed(child, "route")) state.route = true;
+                if (!save_state(state))
+                    return result(Severity::error, "Hotspot is running, but its firewall ownership state couldn't be saved.", 1);
+                if (child.exit_code != 0)
+                    return result(Severity::error,
+                        "Hotspot is running, but firewall setup couldn't be completed. " + firewall_error, 1);
+            }
             const auto vpn = nordvpn_info();
             const bool nordvpn_warning = nordvpn_needs_warning(vpn);
             auto already = result(nordvpn_warning ? Severity::warning : Severity::info,
@@ -1079,15 +1092,13 @@ OperationResult HotspotService::start() const {
     constexpr std::string_view ap = "ap0";
     constexpr std::string_view profile = "apctl-hotspot";
     const auto existing = run_process({"iw", "dev", std::string(ap), "info"});
-    if (existing.exit_code != 0) {
+    const bool create_interface = existing.exit_code != 0;
+    std::string phy_index = "0";
+    if (create_interface) {
         const auto phy = run_process({"iw", "dev", *iface, "info"});
         const auto wiphy = field(phy.out, "\twiphy ");
         if (!wiphy) return result(Severity::error, "Couldn't identify the Wi-Fi adapter. Refresh status and retry.", 3);
-        std::string error;
-        if (!privileged({"iw", "phy", "phy" + *wiphy, "interface", "add", std::string(ap), "type", "__ap"}, error))
-            return result(Severity::error, error, 1);
-        state.interface_owned = true;
-        if (!save_state(state)) return result(Severity::error, "Couldn't save hotspot setup.", 1);
+        phy_index = *wiphy;
     } else if (!state.interface_owned) {
         return result(Severity::error, "A hotspot setup already exists outside this app. Stop it first, then retry.", 3);
     }
@@ -1103,9 +1114,20 @@ OperationResult HotspotService::start() const {
     if (!save_state(state)) return result(Severity::error, "Couldn't save hotspot setup.", 1);
 
     std::string error;
-    if (!prepare_owned_ap(error)) return result(Severity::error, error, 1);
-    if (!configure_firewall(state, ap, *iface, error))
+    const auto firewall_plan = firewall_add_plan(ap, *iface, error);
+    if (!firewall_plan)
         return result(Severity::error, error.empty() ? "Couldn't finish network sharing setup." : error, 1);
+    const auto privileged = privileged_batch({"start", create_interface ? "1" : "0", phy_index,
+                                              firewall_plan->dhcp ? "1" : "0", firewall_plan->dns ? "1" : "0",
+                                              firewall_plan->route ? "1" : "0", *iface}, error);
+    if (helper_completed(privileged, "interface-create")) state.interface_owned = true;
+    if (helper_completed(privileged, "dhcp")) state.dhcp = true;
+    if (helper_completed(privileged, "dns")) state.dns = true;
+    if (helper_completed(privileged, "route")) state.route = true;
+    if (!save_state(state)) return result(Severity::error, "Hotspot setup state couldn't be saved after system setup.", 1);
+    if (privileged.exit_code != 0) return result(Severity::error, error, 1);
+    if (!wait_until_available(ap))
+        return result(Severity::error, "Wi-Fi isn't ready to start the hotspot. Refresh status and retry.", 1);
 
     bool created_profile = false;
     std::string current_uuid;
@@ -1170,20 +1192,52 @@ OperationResult HotspotService::stop() const {
         if (!command({"nmcli", "connection", "delete", "uuid", state.profile_uuid}, error)) return result(Severity::error, error, 1);
     }
     bool cleanup_ok = true;
+    bool delete_dhcp = false;
+    bool delete_dns = false;
+    bool delete_route = false;
     const auto ufw = run_process({"ufw", "--version"});
     if (ufw.exit_code != 0 && (state.dhcp || state.dns || state.route)) cleanup_ok = false;
     if (ufw.exit_code == 0) {
-        if (!remove_ufw_rule({"ufw", "delete", "allow", "in", "on", std::string(ap), "to", "any", "port", "67", "proto", "udp"}, state.dhcp, error)) cleanup_ok = false;
-        if (!save_state(state)) cleanup_ok = false;
-        if (!remove_ufw_rule({"ufw", "delete", "allow", "in", "on", std::string(ap), "to", "any", "port", "53", "proto", "udp"}, state.dns, error)) cleanup_ok = false;
-        if (!save_state(state)) cleanup_ok = false;
-        if (!state.uplink.empty() && !remove_ufw_rule({"ufw", "route", "delete", "allow", "in", "on", std::string(ap), "out", "on", state.uplink, "from", "10.42.0.0/24", "to", "any"}, state.route, error)) cleanup_ok = false;
-        if (!save_state(state)) cleanup_ok = false;
+        const auto plan_remove = [&](std::vector<std::string> rule, bool& owned, bool& remove) {
+            if (!owned) return;
+            const auto presence = ufw_rule_presence(rule);
+            if (presence == UfwRulePresence::unreadable) {
+                error = "Couldn't inspect UFW's IPv4 rules. The recorded firewall rule was left unchanged.";
+                cleanup_ok = false;
+            } else if (presence == UfwRulePresence::missing) {
+                owned = false;
+            } else {
+                remove = true;
+            }
+        };
+        plan_remove({"ufw", "delete", "allow", "in", "on", std::string(ap), "to", "any", "port", "67", "proto", "udp"}, state.dhcp, delete_dhcp);
+        plan_remove({"ufw", "delete", "allow", "in", "on", std::string(ap), "to", "any", "port", "53", "proto", "udp"}, state.dns, delete_dns);
+        if (!state.uplink.empty())
+            plan_remove({"ufw", "route", "delete", "allow", "in", "on", std::string(ap), "out", "on", state.uplink,
+                         "from", "10.42.0.0/24", "to", "any"}, state.route, delete_route);
+        else if (state.route) {
+            error = "Couldn't identify the recorded uplink; its UFW route rule was left unchanged.";
+            cleanup_ok = false;
+        }
     }
-    if (state.interface_owned && run_process({"iw", "dev", std::string(ap), "info"}).exit_code == 0) {
-        (void)command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, error, true);
-        if (!privileged({"ip", "link", "set", "dev", std::string(ap), "down"}, error)) cleanup_ok = false;
-        if (!privileged({"iw", "dev", std::string(ap), "del"}, error)) cleanup_ok = false;
+    bool delete_interface = false;
+    if (state.interface_owned) {
+        delete_interface = run_process({"iw", "dev", std::string(ap), "info"}).exit_code == 0;
+        if (!delete_interface) state.interface_owned = false;
+    }
+    if (!save_state(state)) cleanup_ok = false;
+
+    if (delete_interface) (void)command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, error, true);
+    if (delete_dhcp || delete_dns || delete_route || delete_interface) {
+        const auto child = privileged_batch({"stop", delete_dhcp ? "1" : "0", delete_dns ? "1" : "0",
+                                             delete_route ? "1" : "0", state.uplink.empty() ? "ap0" : state.uplink,
+                                             delete_interface ? "1" : "0"}, error);
+        if (helper_completed(child, "dhcp-delete")) state.dhcp = false;
+        if (helper_completed(child, "dns-delete")) state.dns = false;
+        if (helper_completed(child, "route-delete")) state.route = false;
+        if (helper_completed(child, "interface-delete")) state.interface_owned = false;
+        if (!save_state(state)) cleanup_ok = false;
+        if (child.exit_code != 0) cleanup_ok = false;
     }
     if (!cleanup_ok) return result(Severity::error, "Hotspot stopped, but some cleanup didn't finish. Run `apctl down` again. " + error, 1);
     std::error_code ignored;
