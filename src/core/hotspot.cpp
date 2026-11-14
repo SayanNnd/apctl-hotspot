@@ -276,6 +276,167 @@ NordVpnInfo nordvpn_info() {
     return info;
 }
 
+std::string normalized(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return trim(std::move(value));
+}
+
+std::string query_value(const std::vector<std::string>& command) {
+    const auto value = run_process(command);
+    if (value.exit_code != 0) return {};
+    return normalized(value.out + "\n" + value.err);
+}
+
+std::string flag_value(const std::string& output, const std::vector<std::string>& enabled,
+                       const std::vector<std::string>& disabled) {
+    if (output.empty()) return "unknown";
+    for (const auto& word : enabled)
+        if (output == word || output.find(": " + word) != std::string::npos ||
+            output.find("= " + word) != std::string::npos) return "enabled";
+    for (const auto& word : disabled)
+        if (output == word || output.find(": " + word) != std::string::npos ||
+            output.find("= " + word) != std::string::npos) return "disabled";
+    return "unknown";
+}
+
+std::string config_value(const std::string& output, std::string_view key) {
+    std::istringstream lines(output);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto separator = line.find_first_of(":=");
+        if (separator == std::string::npos || normalized(line.substr(0, separator)) != key) continue;
+        return normalized(line.substr(separator + 1));
+    }
+    return {};
+}
+
+std::string connection_state(const std::string& output) {
+    if (output.find("disconnected") != std::string::npos || output.find("not connected") != std::string::npos)
+        return "disconnected";
+    if (output.find("connected") != std::string::npos) return "connected";
+    return "unknown";
+}
+
+void report_vpn_diagnostics(std::ostream& report) {
+    bool found_client = false;
+    const auto vpn = nordvpn_info();
+    if (vpn.installed) {
+        found_client = true;
+        report << "- VPN: NordVPN (installed)\n";
+        if (!vpn.settings_available) {
+            report << "  Firewall: unknown (settings unavailable); hotspot subnet: unknown\n";
+        } else {
+            report << "  Firewall: " << (vpn.firewall_enabled ? "enabled" : "disabled") << '\n';
+            if (vpn.firewall_enabled) {
+                report << "  Hotspot subnet 10.42.0.0/24: "
+                       << (vpn.hotspot_subnet_allowlisted ? "allowlisted" : "not allowlisted") << '\n';
+                if (!vpn.hotspot_subnet_allowlisted)
+                    report << "  Suggested command: nordvpn allowlist add subnet 10.42.0.0/24\n"
+                           << "  This changes persistent NordVPN policy; apctl will not run it.\n";
+            } else {
+                report << "  Hotspot subnet: not restricted by NordVPN's firewall\n";
+            }
+        }
+    }
+
+    if (executable_available("mullvad")) {
+        found_client = true;
+        const auto status = query_value({"mullvad", "status"});
+        report << "- VPN: Mullvad (installed); connection: "
+               << connection_state(status) << '\n'
+               << "  Kill switch: automatic while connected; lockdown mode: unknown\n"
+               << "  LAN access / hotspot subnet allowance: unknown (check Mullvad settings)\n";
+    }
+
+    if (executable_available("protonvpn")) {
+        found_client = true;
+        const auto status = query_value({"protonvpn", "status"});
+        const auto config = query_value({"protonvpn", "config", "list"});
+        const auto kill_switch = flag_value(config_value(config, "kill-switch"),
+            {"on", "enabled", "standard", "advanced"}, {"off", "disabled"});
+        report << "- VPN: Proton VPN (installed); connection: "
+               << connection_state(status) << '\n'
+               << "  Kill switch: " << kill_switch << " (from CLI config)\n"
+               << "  LAN access / hotspot subnet allowance: unknown (check Proton VPN settings)\n";
+    }
+
+    if (executable_available("piactl")) {
+        found_client = true;
+        const auto status = query_value({"piactl", "get", "connectionstate"});
+        const auto lan = query_value({"piactl", "get", "allowlan"});
+        const auto kill_switch = query_value({"piactl", "get", "killswitch"});
+        report << "- VPN: Private Internet Access (installed); connection: "
+               << connection_state(status) << '\n'
+               << "  Kill switch: " << flag_value(kill_switch, {"true", "on", "enabled"}, {"false", "off", "disabled"}) << '\n'
+               << "  Allow LAN: " << flag_value(lan, {"true", "on", "enabled"}, {"false", "off", "disabled"}) << '\n'
+               << "  Hotspot subnet allowance: follows Allow LAN; subnet-specific state is not exposed\n";
+    }
+
+    if (executable_available("expressvpnctl")) {
+        found_client = true;
+        const auto status = query_value({"expressvpnctl", "get", "connectionstate"});
+        const auto lan = query_value({"expressvpnctl", "get", "allowlan"});
+        const auto kill_switch = query_value({"expressvpnctl", "get", "networklock"});
+        report << "- VPN: ExpressVPN (installed); connection: "
+               << connection_state(status) << '\n'
+               << "  Network Lock: " << flag_value(kill_switch, {"true", "on", "enabled"}, {"false", "off", "disabled"}) << '\n'
+               << "  Allow LAN: " << flag_value(lan, {"true", "on", "enabled"}, {"false", "off", "disabled"}) << '\n'
+               << "  Hotspot subnet allowance: follows Allow LAN; subnet-specific state is not exposed\n";
+    }
+
+    for (const auto& client : {std::pair{"surfshark-vpn", "Surfshark"},
+                               std::pair{"windscribe-cli", "Windscribe"},
+                               std::pair{"windscribe", "Windscribe"}}) {
+        if (!executable_available(client.first)) continue;
+        found_client = true;
+        report << "- VPN: " << client.second << " (installed); connection/firewall/LAN flags: unknown\n"
+               << "  Check the VPN app's settings for kill switch and local-network access.\n";
+    }
+
+    const auto active = executable_available("nmcli")
+        ? run_process({"nmcli", "-t", "-f", "TYPE", "connection", "show", "--active"})
+        : ProcessResult{};
+    bool active_vpn = false;
+    if (active.exit_code == 0) {
+        std::istringstream lines(active.out);
+        std::string type;
+        while (std::getline(lines, type)) {
+            if (type == "vpn" || type.rfind("vpn:", 0) == 0) active_vpn = true;
+        }
+    }
+    if (active_vpn) {
+        report << "- VPN connection: NetworkManager reports an active VPN; provider-specific firewall flags may not be available\n";
+        found_client = true;
+    }
+    if (executable_available("ip")) {
+        const auto links = run_process({"ip", "-o", "link", "show"});
+        if (links.exit_code == 0) {
+            static const std::vector<std::string> tunnel_prefixes = {
+                "wg", "tun", "tap", "utun", "tailscale", "nordlynx", "proton", "mullvad", "vpn"
+            };
+            std::istringstream lines(links.out);
+            std::string line;
+            while (std::getline(lines, line)) {
+                const auto first_colon = line.find(':');
+                const auto second_colon = first_colon == std::string::npos ? first_colon : line.find(':', first_colon + 1);
+                if (second_colon == std::string::npos) continue;
+                std::string name = trim(line.substr(first_colon + 1, second_colon - first_colon - 1));
+                const auto peer = name.find('@');
+                if (peer != std::string::npos) name.resize(peer);
+                if (!std::any_of(tunnel_prefixes.begin(), tunnel_prefixes.end(), [&](const std::string& prefix) {
+                        return name.rfind(prefix, 0) == 0;
+                    })) continue;
+                report << "- VPN-like tunnel interface detected (" << name
+                       << "); provider/firewall/LAN flags: unknown\n";
+                found_client = true;
+            }
+        }
+    }
+    if (!found_client) report << "- VPN: no supported VPN client or active NetworkManager VPN detected\n";
+}
+
 bool polkit_agent_process_detected() {
     if (!executable_available("ps")) return false;
     const auto processes = run_process({"ps", "-e", "-o", "comm="});
@@ -876,16 +1037,7 @@ OperationResult HotspotService::setup() const {
         else report << "- UFW: installed; enabled state couldn't be confirmed" << (ufw_error.empty() ? "\n" : ": " + ufw_error + "\n");
     }
 
-    const auto vpn = nordvpn_info();
-    if (!vpn.installed) report << "- NordVPN: not found\n";
-    else if (!vpn.settings_available) report << "- NordVPN: installed; settings unavailable, firewall state unknown\n";
-    else if (!vpn.firewall_enabled) report << "- NordVPN firewall: disabled\n";
-    else if (vpn.hotspot_subnet_allowlisted)
-        report << "- NordVPN firewall: enabled; hotspot subnet 10.42.0.0/24 is allowlisted\n";
-    else
-        report << "- NordVPN firewall: enabled; hotspot clients may be blocked\n"
-               << "  To allow hotspot traffic outside the VPN, run: nordvpn allowlist add subnet 10.42.0.0/24\n"
-               << "  This changes NordVPN's persistent policy. apctl will not run it automatically.\n";
+    report_vpn_diagnostics(report);
 
     if (polkit_agent_process_detected())
         report << "- Polkit session: a common authentication-agent process was detected; registration/readiness can't be confirmed\n";
