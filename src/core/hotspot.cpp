@@ -1262,6 +1262,10 @@ OperationResult HotspotService::start() const {
         return result(Severity::error, "A hotspot setup already exists outside this app. Stop it first, then retry.", 3);
     }
 
+    const bool reusing_profile = !state.profile_uuid.empty() && state.profile_backend == "nmcli-hotspot-v1" && connection_exists_uuid(state.profile_uuid);
+    if (!reusing_profile && connection_name_exists(profile))
+        return result(Severity::error, "A hotspot with this app's name already exists outside the app. Rename or remove it, then retry.", 3);
+
     state.uplink = *iface;
     if (!state.profile_uuid.empty() && state.profile_backend != "nmcli-hotspot-v1" && connection_exists_uuid(state.profile_uuid)) {
         std::string error;
@@ -1290,20 +1294,23 @@ OperationResult HotspotService::start() const {
 
     bool created_profile = false;
     std::string current_uuid;
-    if (!state.profile_uuid.empty() && state.profile_backend == "nmcli-hotspot-v1" && connection_exists_uuid(state.profile_uuid)) {
+    if (reusing_profile) {
         current_uuid = state.profile_uuid;
         const auto name = run_process({"nmcli", "-g", "connection.id", "connection", "show", "uuid", current_uuid});
         if (name.exit_code == 0 && trim(name.out) == "Caelestia-Hotspot" &&
             !command({"nmcli", "connection", "modify", "uuid", current_uuid, "connection.id", std::string(profile)}, error))
             return result(Severity::error, error, 1);
     } else {
-        if (connection_name_exists(profile))
-            return result(Severity::error, "A hotspot with this app's name already exists outside the app. Rename or remove it, then retry.", 3);
         if (!command({"nmcli", "device", "wifi", "hotspot", "ifname", std::string(ap), "con-name", std::string(profile),
-                      "ssid", config->ssid, "band", band, "channel", *channel, "password", config->password}, error))
+                      "ssid", config->ssid, "band", band, "channel", *channel, "password", config->password}, error)) {
+            (void)stop();
             return result(Severity::error, "NetworkManager couldn't start the hotspot: " + error, 1);
+        }
         const auto uuid = connection_uuid(profile);
-        if (!uuid) return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+        if (!uuid) {
+            (void)stop();
+            return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+        }
         current_uuid = *uuid;
         created_profile = true;
         state.profile_uuid = current_uuid;
@@ -1311,7 +1318,10 @@ OperationResult HotspotService::start() const {
     }
     state.profile_uuid = current_uuid;
     state.profile_backend = "nmcli-hotspot-v1";
-    if (!save_state(state)) return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+    if (!save_state(state)) {
+        (void)stop();
+        return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+    }
     if (!created_profile) {
         const std::vector<std::vector<std::string>> settings = {
             {"nmcli", "connection", "modify", "uuid", current_uuid, "connection.interface-name", std::string(ap)},
@@ -1324,12 +1334,16 @@ OperationResult HotspotService::start() const {
             {"nmcli", "connection", "modify", "uuid", current_uuid, "connection.autoconnect", "no"}
         };
         for (const auto& setting : settings) {
-            if (!command(setting, error))
+            if (!command(setting, error)) {
+                (void)stop();
                 return result(Severity::error,
                     "Couldn't update hotspot setting `" + setting[5] + "`. " + error, 1);
+            }
         }
-        if (!command({"nmcli", "connection", "up", "uuid", current_uuid, "ifname", std::string(ap)}, error))
+        if (!command({"nmcli", "connection", "up", "uuid", current_uuid, "ifname", std::string(ap)}, error)) {
+            (void)stop();
             return result(Severity::error, "NetworkManager couldn't activate the hotspot profile. " + error, 1);
+        }
     }
     const auto vpn = nordvpn_info();
     const bool nordvpn_warning = nordvpn_needs_warning(vpn);
@@ -1343,7 +1357,8 @@ OperationResult HotspotService::stop() const {
     constexpr std::string_view ap = "ap0";
     auto state = load_state();
     const bool owned_profile_exists = !state.profile_uuid.empty() && connection_exists_uuid(state.profile_uuid);
-    if (!owned_profile_exists && connection_name_exists("apctl-hotspot"))
+    const bool has_owned_resources = owned_profile_exists || state.interface_owned || state.dhcp || state.dns || state.route;
+    if (!has_owned_resources && connection_name_exists("apctl-hotspot"))
         return result(Severity::error, "An existing hotspot wasn't created by this app, so it was left unchanged.", 3);
     std::string error;
     if (owned_profile_exists) {
