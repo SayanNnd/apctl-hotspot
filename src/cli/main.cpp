@@ -45,6 +45,7 @@ void print_help() {
               << "  setup                Run read-only setup diagnostics\n"
               << "  check                Check if this computer can share Wi-Fi\n"
               << "  status               Show Wi-Fi and hotspot status\n"
+              << "  devices [-v]         List connected devices; -v shows full details\n"
               << "  gen [SSID]           Save an SSID and generate a password\n"
               << "  up                   Start the hotspot\n"
               << "  open                 Alias for up\n"
@@ -98,6 +99,34 @@ int main(int argc, char** argv) {
                 std::cout << " channel " << state.hotspot_channel;
             }
             std::cout << "\nConnected devices: " << state.connected_devices << '\n';
+        }
+        return 0;
+    }
+    if (action == "devices") {
+        if (argc > 3 || (argc == 3 && std::string_view(argv[2]) != "-v")) {
+            std::cerr << "Usage: apctl devices [-v]\n";
+            return 2;
+        }
+        if (argc == 3) return report(service.connected_device_details());
+        const auto state = service.status();
+        if (!state.network_manager_available) {
+            std::cerr << "Network settings aren't available right now.\n";
+            return 1;
+        }
+        if (!state.hotspot_active) {
+            std::cout << "Hotspot is stopped. No connected devices.\n";
+            return 0;
+        }
+        std::cout << "Connected devices: " << state.devices.size() << '\n';
+        if (state.devices.empty()) {
+            std::cout << "No devices are currently connected.\n";
+            return 0;
+        }
+        for (size_t index = 0; index < state.devices.size(); ++index) {
+            const auto& device = state.devices[index];
+            std::cout << (index + 1) << ". " << device.name << " - "
+                      << (device.traffic_mb.empty() ? "unknown" : device.traffic_mb) << " MB - "
+                      << (device.connected_duration.empty() ? "unknown" : device.connected_duration) << '\n';
         }
         return 0;
     }

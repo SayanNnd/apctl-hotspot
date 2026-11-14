@@ -19,6 +19,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -225,6 +226,22 @@ Element status_line(const Status& status) {
     });
 }
 
+Element connected_devices_section(const Status& status) {
+    Elements rows;
+    if (!status.hotspot_active || status.devices.empty()) {
+        rows.push_back(text("No connected devices") | color(kMuted));
+        return vbox(std::move(rows));
+    }
+    for (size_t index = 0; index < status.devices.size(); ++index) {
+        const auto& device = status.devices[index];
+        rows.push_back(paragraph(std::to_string(index + 1) + ". " + device.name + " - " +
+                                 (device.traffic_mb.empty() ? "unknown" : device.traffic_mb) + " MB - " +
+                                 (device.connected_duration.empty() ? "unknown" : device.connected_duration))
+                       | color(kInk));
+    }
+    return vbox(std::move(rows));
+}
+
 Element too_small(const Dimensions& term, int min_rows) {
     return vbox({
                filler(),
@@ -303,6 +320,10 @@ int run() {
     std::thread worker;
     std::thread working_ticker;
     std::atomic<bool> ticker_running{false};
+    std::thread status_refresher;
+    std::atomic<bool> status_refresh_running{false};
+    std::atomic<bool> user_action_running{false};
+    std::mutex service_mutex;
 
     // Components are declared up front so the Input callbacks can move focus
     // between them before every component has been built.
@@ -353,6 +374,7 @@ int run() {
         model.status = std::move(done.status);
         model.result = std::move(done.operation);
         model.busy = false;
+        user_action_running.store(false);
         if (done.show_result) open_dialog(Dialog::result);
         else close_dialog();
         if (model.quit_after_work) screen.Exit();
@@ -364,6 +386,7 @@ int run() {
         if (working_ticker.joinable()) working_ticker.join();
         close_dialog();
         model.busy = true;
+        user_action_running.store(true);
         model.working_frame = 0;
         try {
             ticker_running.store(true);
@@ -377,15 +400,18 @@ int run() {
             worker = std::thread([&, operation = std::move(operation), show_result]() mutable {
                 auto done = std::make_shared<Completion>();
                 done->show_result = show_result;
-                try {
-                    done->operation = operation();
-                } catch (...) {
-                    done->operation = {Severity::error, 1, "The action stopped unexpectedly. Try again.", std::nullopt};
-                }
-                try {
-                    done->status = service.status();
-                } catch (...) {
-                    done->status = {};
+                {
+                    std::lock_guard<std::mutex> service_lock(service_mutex);
+                    try {
+                        done->operation = operation();
+                    } catch (...) {
+                        done->operation = {Severity::error, 1, "The action stopped unexpectedly. Try again.", std::nullopt};
+                    }
+                    try {
+                        done->status = service.status();
+                    } catch (...) {
+                        done->status = {};
+                    }
                 }
                 post_ui([&, done] { finish(*done); });
             });
@@ -393,6 +419,7 @@ int run() {
             ticker_running.store(false);
             if (working_ticker.joinable()) working_ticker.join();
             model.busy = false;
+            user_action_running.store(false);
             local_result(Severity::error, "Couldn't start the background operation.", 1);
         }
     };
@@ -497,7 +524,13 @@ int run() {
         auto_band_button->TakeFocus();
     });
     auto refresh_button = action_button("Refresh status", [&] {
-        launch([&] { return OperationResult{Severity::success, 0, "Status refreshed.", std::nullopt}; });
+        launch([&] {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            return OperationResult{Severity::success, 0, "Status refreshed.", std::nullopt};
+        });
+    });
+    auto device_details_button = action_button("Connected Devices Details", [&] {
+        launch([&] { return service.connected_device_details(); });
     });
     auto quit_button = action_button("Quit", [&] { screen.Exit(); });
 
@@ -534,7 +567,8 @@ int run() {
 
     // ------------------------------------------------------ pages
     auto action_list = Container::Vertical({generate_if_needed, start_button, stop_button, setup_button, check_button,
-        credentials_button, password_button, ssid_button, change_band_button, refresh_button, quit_button});
+        credentials_button, password_button, ssid_button, change_band_button, device_details_button,
+        refresh_button, quit_button});
     auto password_form = Container::Vertical({password_input, confirm_input, save_password, cancel_password});
     auto ssid_form = Container::Vertical({ssid_input, save_ssid, cancel_ssid});
     auto band_choices = Container::Vertical({auto_band_button, band_24_button, band_5_button});
@@ -588,16 +622,41 @@ int run() {
     };
 
     auto root = CatchEvent(Renderer(pages, [&]() -> Element {
-        // First frame: the loop is running now, so the worker's Post() is
-        // guaranteed to be delivered (posts made before Loop() are dropped).
+        // Start a silent first status read and then refresh every six seconds.
         if (!model.started) {
             model.started = true;
-            launch([&] { return OperationResult{Severity::info, 0, "Status refreshed.", std::nullopt}; }, false);
+            status_refresh_running.store(true);
+            try {
+                status_refresher = std::thread([&] {
+                    bool first_refresh = true;
+                    while (status_refresh_running.load()) {
+                        if (!first_refresh) {
+                            for (int tick = 0; tick < 60 && status_refresh_running.load(); ++tick)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                        first_refresh = false;
+                        if (!status_refresh_running.load()) break;
+                        Status latest;
+                        {
+                            std::unique_lock<std::mutex> service_lock(service_mutex, std::try_to_lock);
+                            if (!service_lock.owns_lock() || user_action_running.load()) continue;
+                            try { latest = service.status(); } catch (...) { continue; }
+                        }
+                        post_ui([&, latest = std::move(latest)]() mutable {
+                            if (!model.busy && model.dialog == Dialog::none)
+                                model.status = std::move(latest);
+                        });
+                    }
+                });
+            } catch (...) {
+                status_refresh_running.store(false);
+            }
         }
 
         const bool in_form = model.dialog == Dialog::password || model.dialog == Dialog::ssid;
         const Dimensions term = Terminal::Size();
-        const int min_rows = in_form ? kMinRowsForm : kMinRowsMenu;
+        const int client_rows = 1 + std::max(1, static_cast<int>(model.status.devices.size()));
+        const int min_rows = in_form ? kMinRowsForm : std::max(kMinRowsMenu, kMinRowsMenu + client_rows);
         if (term.dimx < kMinCols || term.dimy < min_rows) return too_small(term, min_rows);
         const int menu_width = std::min(term.dimx - 4, std::max(kPanelWidth, term.dimx * 3 / 4));
         Element content;
@@ -628,6 +687,8 @@ int run() {
                 separator() | color(kLine),
                 status_line(model.status),
                 hbox({text("Connected devices  ") | color(kInk), text(clients) | color(kInk)}),
+                separator() | color(kLine),
+                connected_devices_section(model.status),
                 separator() | color(kLine),
                 action_list->Render() | size(WIDTH, EQUAL, menu_width - 4)
             });
@@ -729,6 +790,8 @@ int run() {
 
     screen.Loop(root);
 
+    status_refresh_running.store(false);
+    if (status_refresher.joinable()) status_refresher.join();
     ticker_running.store(false);
     if (working_ticker.joinable()) working_ticker.join();
     if (worker.joinable()) worker.join();

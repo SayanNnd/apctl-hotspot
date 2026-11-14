@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace apctl::core {
 
@@ -12,6 +13,20 @@ struct Credentials {
     std::string ssid;
     std::string password;
     std::string qr_text;
+};
+
+struct ConnectedDevice {
+    std::string name;
+    std::string mac_address;
+    std::string ipv4_address;
+    std::string signal;
+    std::string connected_time;
+    std::string connected_duration;
+    std::string traffic_mb;
+    std::string rx_bytes;
+    std::string tx_bytes;
+    std::string rx_bitrate;
+    std::string tx_bitrate;
 };
 
 struct OperationResult {
@@ -31,11 +46,13 @@ struct Status {
     std::string hotspot_band;
     std::string hotspot_channel;
     int connected_devices = 0;
+    std::vector<ConnectedDevice> devices;
 };
 
 class HotspotService {
 public:
     Status status() const;
+    OperationResult connected_device_details() const;
     OperationResult check() const;
     OperationResult setup() const;
     OperationResult generate(std::string ssid = "apctl-hotspot") const;

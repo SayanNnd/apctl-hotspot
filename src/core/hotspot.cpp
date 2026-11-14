@@ -12,6 +12,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <map>
 #include <regex>
 #include <sstream>
 #include <string_view>
@@ -941,6 +943,131 @@ std::optional<Credentials> load_credentials(bool with_qr) {
     return credentials;
 }
 
+std::string normalize_mac(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+std::string safe_display_text(std::string value) {
+    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
+        return ch < 0x20 || ch == 0x7f;
+    }), value.end());
+    return trim(std::move(value));
+}
+
+void set_device_summary(ConnectedDevice& device) {
+    try {
+        const auto rx = std::stoull(device.rx_bytes);
+        const auto tx = std::stoull(device.tx_bytes);
+        std::ostringstream traffic;
+        traffic << std::fixed << std::setprecision(2)
+                << (static_cast<long double>(rx) + static_cast<long double>(tx)) / 1000000.0L;
+        device.traffic_mb = traffic.str();
+    } catch (...) {
+        device.traffic_mb = "unknown";
+    }
+    try {
+        std::istringstream time(device.connected_time);
+        uint64_t seconds = 0;
+        if (!(time >> seconds)) {
+            device.connected_duration = "unknown";
+        } else if (seconds < 60) {
+            device.connected_duration = std::to_string(seconds) + "s";
+        } else if (seconds < 3600) {
+            device.connected_duration = std::to_string(seconds / 60) + "m " +
+                                        std::to_string(seconds % 60) + "s";
+        } else {
+            device.connected_duration = std::to_string(seconds / 3600) + "h " +
+                                        std::to_string((seconds % 3600) / 60) + "m";
+        }
+    } catch (...) {
+        device.connected_duration = "unknown";
+    }
+}
+
+std::vector<ConnectedDevice> connected_devices() {
+    struct Lease { std::string ip; std::string name; };
+    std::map<std::string, Lease> leases;
+    {
+        std::ifstream lease_file("/var/lib/NetworkManager/dnsmasq-ap0.leases");
+        std::string line;
+        while (std::getline(lease_file, line)) {
+            std::istringstream row(line);
+            std::string expiry, mac, ip, name;
+            if (!(row >> expiry >> mac >> ip >> name)) continue;
+            leases[normalize_mac(std::move(mac))] = {std::move(ip), name == "*" ? "" : safe_display_text(std::move(name))};
+        }
+    }
+
+    std::map<std::string, std::string> neighbors;
+    const auto neighbor_output = run_process({"ip", "-4", "neigh", "show", "dev", "ap0"});
+    if (neighbor_output.exit_code == 0) {
+        std::istringstream lines(neighbor_output.out);
+        std::string line;
+        while (std::getline(lines, line)) {
+            std::istringstream row(line);
+            std::string ip, token, mac;
+            if (!(row >> ip)) continue;
+            while (row >> token) {
+                if (token == "lladdr") { row >> mac; break; }
+            }
+            if (!mac.empty()) neighbors[normalize_mac(std::move(mac))] = std::move(ip);
+        }
+    }
+
+    std::vector<ConnectedDevice> devices;
+    const auto stations = run_process({"iw", "dev", "ap0", "station", "dump"});
+    if (stations.exit_code != 0) return devices;
+    std::istringstream lines(stations.out);
+    std::string line;
+    ConnectedDevice device;
+    bool in_station = false;
+    const auto finish_station = [&] {
+        if (!in_station) return;
+        const auto mac = normalize_mac(device.mac_address);
+        const auto lease = leases.find(mac);
+        if (lease != leases.end()) {
+            device.ipv4_address = lease->second.ip;
+            if (!lease->second.name.empty()) device.name = lease->second.name;
+        }
+        if (device.ipv4_address.empty()) {
+            const auto neighbor = neighbors.find(mac);
+            if (neighbor != neighbors.end()) device.ipv4_address = neighbor->second;
+        }
+        if (device.name.empty() || device.name == "Unknown device") {
+            device.name = device.mac_address.size() >= 5
+                ? "Device " + device.mac_address.substr(device.mac_address.size() - 5)
+                : "Device";
+        }
+        set_device_summary(device);
+        devices.push_back(std::move(device));
+    };
+    while (std::getline(lines, line)) {
+        if (line.rfind("Station ", 0) == 0) {
+            finish_station();
+            std::istringstream header(line);
+            std::string station_word, mac;
+            header >> station_word >> mac;
+            device = ConnectedDevice{};
+            device.mac_address = std::move(mac);
+            device.name.clear();
+            in_station = true;
+            continue;
+        }
+        if (!in_station) continue;
+        if (const auto value = field(line, "\tsignal:")) device.signal = safe_display_text(*value);
+        else if (const auto value = field(line, "\tconnected time:")) device.connected_time = safe_display_text(*value);
+        else if (const auto value = field(line, "\trx bytes:")) device.rx_bytes = safe_display_text(*value);
+        else if (const auto value = field(line, "\ttx bytes:")) device.tx_bytes = safe_display_text(*value);
+        else if (const auto value = field(line, "\trx bitrate:")) device.rx_bitrate = safe_display_text(*value);
+        else if (const auto value = field(line, "\ttx bitrate:")) device.tx_bitrate = safe_display_text(*value);
+    }
+    finish_station();
+    return devices;
+}
+
 }  // namespace
 
 Status HotspotService::status() const {
@@ -965,13 +1092,35 @@ Status HotspotService::status() const {
         current.hotspot_channel = trim(channel->substr(0, channel->find(' ')));
         current.hotspot_band = channel_band_name(current.hotspot_channel);
     }
-    const auto stations = run_process({"iw", "dev", "ap0", "station", "dump"});
-    if (stations.exit_code == 0) {
-        std::istringstream lines(stations.out);
-        std::string line;
-        while (std::getline(lines, line)) if (line.rfind("Station ", 0) == 0) ++current.connected_devices;
-    }
+    current.devices = connected_devices();
+    current.connected_devices = static_cast<int>(current.devices.size());
     return current;
+}
+
+OperationResult HotspotService::connected_device_details() const {
+    const auto current = status();
+    if (!current.network_manager_available)
+        return result(Severity::error, "Network settings aren't available right now.", 1);
+    if (!current.hotspot_active)
+        return result(Severity::info, "Hotspot is stopped. No connected devices.");
+    if (current.devices.empty())
+        return result(Severity::info, "No devices are currently connected.");
+
+    std::ostringstream report;
+    report << "Connected device details\n";
+    for (size_t index = 0; index < current.devices.size(); ++index) {
+        const auto& device = current.devices[index];
+        report << '\n' << (index + 1) << ". " << device.name
+               << "\nMAC: " << device.mac_address
+               << "\nIPv4: " << (device.ipv4_address.empty() ? "not assigned" : device.ipv4_address)
+               << "\nSignal: " << (device.signal.empty() ? "unknown" : device.signal)
+               << "\nConnected: " << (device.connected_time.empty() ? "unknown" : device.connected_time)
+               << "\nTraffic: RX " << (device.rx_bytes.empty() ? "unknown" : device.rx_bytes + " bytes")
+               << ", TX " << (device.tx_bytes.empty() ? "unknown" : device.tx_bytes + " bytes")
+               << "\nBitrate: RX " << (device.rx_bitrate.empty() ? "unknown" : device.rx_bitrate)
+               << ", TX " << (device.tx_bitrate.empty() ? "unknown" : device.tx_bitrate) << '\n';
+    }
+    return result(Severity::info, report.str());
 }
 
 OperationResult HotspotService::check() const {
