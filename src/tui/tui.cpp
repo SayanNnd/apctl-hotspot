@@ -453,6 +453,10 @@ int run() {
 
     ok_button = action_button("OK", close_dialog, nullptr, true);
 
+    auto generate_button = action_button("Generate hotspot credentials", [&] {
+        launch([&] { return service.generate(); });
+    });
+    auto generate_if_needed = Maybe(generate_button, [&] { return !model.status.credentials_configured; });
     auto start_button = action_button("Start hotspot", [&] {
         launch([&] { return service.start(); });
     }, [&] { return !model.status.hotspot_active; });
@@ -529,7 +533,7 @@ int run() {
     confirm_input = Input(&model.confirm_input, confirm_options);
 
     // ------------------------------------------------------ pages
-    auto action_list = Container::Vertical({start_button, stop_button, setup_button, check_button,
+    auto action_list = Container::Vertical({generate_if_needed, start_button, stop_button, setup_button, check_button,
         credentials_button, password_button, ssid_button, change_band_button, refresh_button, quit_button});
     auto password_form = Container::Vertical({password_input, confirm_input, save_password, cancel_password});
     auto ssid_form = Container::Vertical({ssid_input, save_ssid, cancel_ssid});

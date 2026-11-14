@@ -41,6 +41,7 @@ sudo cmake --install build --prefix /usr/local
 | `change-ssid` | `apctl change-ssid` — prompt for a new hotspot name. |
 | `change-band` | `apctl change-band <auto|2.4|5>` — select automatic, 2.4 GHz, or 5 GHz hotspot band. |
 | `down` | `apctl down` — stop the app-managed hotspot and clean up its recorded rules. |
+| `cleanup` | `apctl cleanup` — stop and clean up an app-owned hotspot left by an earlier run. |
 | `tui` | `apctl tui` — open the full-screen interactive terminal interface. |
 
 ### Typical flow
@@ -57,7 +58,7 @@ apctl down
 apctl tui
 ```
 
-In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. “Change band” opens a dialog with Auto, 2.4 GHz, and 5 GHz choices; Auto follows the Wi-Fi uplink. “Show password and QR code” and “Check Wi-Fi support” display their output in a separate, centered result dialog; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows a fixed-size animated Working dialog. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
+In the TUI, use Up/Down and Enter to navigate or run an action, click a button to run it, and use the scroll wheel to move through the buttons. Esc or `q` quits. The password and SSID forms accept mouse clicks; password fields hide typed characters. When no valid saved hotspot credentials exist, “Generate hotspot credentials” appears at the top of the action list and disappears after generation succeeds. “Change band” opens a dialog with Auto, 2.4 GHz, and 5 GHz choices; Auto follows the Wi-Fi uplink. “Show password and QR code”, “Setup diagnostics”, and “Check Wi-Fi support” display their output in a separate, centered result dialog; press Enter or left-click to dismiss it. Long-running system actions run in the background while the UI shows a fixed-size animated Working dialog. Start and Stop are disabled whenever their action does not apply. Quitting leaves a running hotspot active; stop it with the button or `apctl down`.
 
 If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generated and saved with user-only permissions. Changing the password or name while the hotspot is active restarts it, so connected devices need to reconnect.
 
@@ -67,7 +68,7 @@ If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generate
 
 `apctl` groups its privileged interface and UFW setup into one `pkexec` request for each hotspot start, and its cleanup into one request for each stop. Your desktop or NetworkManager may still request authorization separately under local policy. Approval is not made permanent: apctl never stores the system password or changes Polkit policy, so later operations can require authorization again.
 
-The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. Your existing Wi-Fi connection and unrelated firewall rules are left in place.
+The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` or `apctl cleanup` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. This also handles saved state migrated from the old Caelestia config location. Profiles and rules without an app ownership record are left untouched.
 
 `apctl setup` is a read-only diagnostic. It does not install software, request elevated permissions, change desktop configuration, or change firewall/VPN settings. Its polkit-agent check is only a process hint; it cannot confirm that an agent is registered or ready to authorize a request.
 

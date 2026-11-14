@@ -23,6 +23,7 @@ struct OperationResult {
 
 struct Status {
     bool network_manager_available = false;
+    bool credentials_configured = false;
     std::string wifi_device;
     std::string wifi_connection;
     bool hotspot_active = false;

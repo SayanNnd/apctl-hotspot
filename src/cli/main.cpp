@@ -53,6 +53,7 @@ void print_help() {
               << "  change-ssid          Prompt for a new SSID\n"
               << "  change-band <band>   Set hotspot band: auto, 2.4, or 5\n"
               << "  down                 Stop the hotspot\n"
+              << "  cleanup              Stop and clean up a recorded hotspot from an earlier run\n"
               << "  tui                  Open the interactive terminal interface\n";
 }
 
@@ -103,7 +104,7 @@ int main(int argc, char** argv) {
     if (action == "gen") return report(service.generate(argc > 2 ? argv[2] : "apctl-hotspot"));
     if (action == "up" || action == "open") return report(service.start());
     if (action == "show-password") return report(service.show_credentials());
-    if (action == "down") return report(service.stop());
+    if (action == "down" || action == "cleanup") return report(service.stop());
     if (action == "change-password") {
         const auto first = prompt_secret("New hotspot password (8–63 characters): ");
         if (!first) { std::cerr << "Couldn't read the password.\n"; return 1; }

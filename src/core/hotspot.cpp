@@ -295,27 +295,33 @@ bool polkit_agent_process_detected() {
     return false;
 }
 
+std::pair<bool, bool> inspect_saved_config(const fs::path& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return {false, false};
+    bool has_ssid = false;
+    bool has_password = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        const auto equal = line.find('=');
+        if (equal == std::string::npos) continue;
+        const auto key = line.substr(0, equal);
+        const auto value = line.substr(equal + 1);
+        if (key == "ssid") has_ssid = !value.empty();
+        else if (key == "password") has_password = value.size() >= 8;
+    }
+    return {true, has_ssid && has_password && !file.bad()};
+}
+
+bool saved_credentials_available() {
+    const auto current = inspect_saved_config(config_path());
+    return current.first ? current.second : inspect_saved_config(legacy_config_path()).second;
+}
+
 std::string saved_config_status() {
-    const auto inspect = [](const fs::path& path) {
-        std::ifstream file(path);
-        if (!file.is_open()) return std::pair<bool, bool>{false, false};
-        bool has_ssid = false;
-        bool has_password = false;
-        std::string line;
-        while (std::getline(file, line)) {
-            const auto equal = line.find('=');
-            if (equal == std::string::npos) continue;
-            const auto key = line.substr(0, equal);
-            const auto value = line.substr(equal + 1);
-            if (key == "ssid") has_ssid = !value.empty();
-            else if (key == "password") has_password = value.size() >= 8;
-        }
-        return std::pair<bool, bool>{true, has_ssid && has_password && !file.bad()};
-    };
-    const auto current = inspect(config_path());
+    const auto current = inspect_saved_config(config_path());
     if (current.first) return current.second ? "saved credentials are present (values hidden)"
                                               : "current config exists but is incomplete or unreadable";
-    const auto legacy = inspect(legacy_config_path());
+    const auto legacy = inspect_saved_config(legacy_config_path());
     if (legacy.first) return legacy.second ? "legacy Caelestia config found; migration is deferred"
                                            : "legacy config exists but is incomplete or unreadable";
     return "no saved credentials; run `apctl gen` first";
@@ -778,6 +784,7 @@ std::optional<Credentials> load_credentials(bool with_qr) {
 
 Status HotspotService::status() const {
     Status current;
+    current.credentials_configured = saved_credentials_available();
     current.network_manager_available = run_process({"nmcli", "general", "status"}).exit_code == 0;
     if (!current.network_manager_available) return current;
 
