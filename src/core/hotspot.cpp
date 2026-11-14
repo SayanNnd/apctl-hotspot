@@ -1337,10 +1337,18 @@ OperationResult HotspotService::change_band(BandPreference band) const {
                   std::string(band_preference_name(band)) + ". It will take effect the next time the hotspot starts.");
 }
 
+namespace {
+OperationResult cleanup_owned_state(FirewallState state);
+OperationResult rollback_start(FirewallState state, std::string message, int exit_code);
+}  // namespace
+
 OperationResult HotspotService::start() const {
     const auto config = load_config();
     if (!config) return result(Severity::error, "Hotspot details aren't set up yet. Generate them first.", 2);
     auto state = load_state();
+    const auto fail_and_cleanup = [&](std::string message, int exit_code = 1) {
+        return rollback_start(state, std::move(message), exit_code);
+    };
     if (!state.profile_uuid.empty() && connection_exists_uuid(state.profile_uuid)) {
         const auto active_uuid = run_process({"nmcli", "-g", "GENERAL.CON-UUID", "device", "show", "ap0"});
         if (active_uuid.exit_code == 0 && trim(active_uuid.out) == state.profile_uuid) {
@@ -1419,7 +1427,8 @@ OperationResult HotspotService::start() const {
     if (!state.profile_uuid.empty() && state.profile_backend != "nmcli-hotspot-v1" && connection_exists_uuid(state.profile_uuid)) {
         std::string error;
         (void)command({"nmcli", "connection", "down", "uuid", state.profile_uuid}, error, true);
-        if (!command({"nmcli", "connection", "delete", "uuid", state.profile_uuid}, error)) return result(Severity::error, error, 1);
+        if (!command({"nmcli", "connection", "delete", "uuid", state.profile_uuid}, error))
+            return fail_and_cleanup(error);
         state.profile_uuid.clear();
         state.profile_backend.clear();
     }
@@ -1436,10 +1445,11 @@ OperationResult HotspotService::start() const {
     if (helper_completed(privileged, "dhcp")) state.dhcp = true;
     if (helper_completed(privileged, "dns")) state.dns = true;
     if (helper_completed(privileged, "route")) state.route = true;
-    if (!save_state(state)) return result(Severity::error, "Hotspot setup state couldn't be saved after system setup.", 1);
-    if (privileged.exit_code != 0) return result(Severity::error, error, 1);
+    if (!save_state(state))
+        return fail_and_cleanup("Hotspot setup state couldn't be saved after system setup.");
+    if (privileged.exit_code != 0) return fail_and_cleanup(error);
     if (!wait_until_available(ap))
-        return result(Severity::error, "Wi-Fi isn't ready to start the hotspot. Refresh status and retry.", 1);
+        return fail_and_cleanup("Wi-Fi isn't ready to start the hotspot. Refresh status and retry.");
 
     bool created_profile = false;
     std::string current_uuid;
@@ -1448,17 +1458,16 @@ OperationResult HotspotService::start() const {
         const auto name = run_process({"nmcli", "-g", "connection.id", "connection", "show", "uuid", current_uuid});
         if (name.exit_code == 0 && trim(name.out) == "Caelestia-Hotspot" &&
             !command({"nmcli", "connection", "modify", "uuid", current_uuid, "connection.id", std::string(profile)}, error))
-            return result(Severity::error, error, 1);
+            return fail_and_cleanup(error);
     } else {
         if (!command({"nmcli", "device", "wifi", "hotspot", "ifname", std::string(ap), "con-name", std::string(profile),
                       "ssid", config->ssid, "band", band, "channel", *channel, "password", config->password}, error)) {
-            (void)stop();
-            return result(Severity::error, "NetworkManager couldn't start the hotspot: " + error, 1);
+            return fail_and_cleanup("NetworkManager couldn't start the hotspot: " + error);
         }
         const auto uuid = connection_uuid(profile);
         if (!uuid) {
-            (void)stop();
-            return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+            return fail_and_cleanup("Hotspot started, but its NetworkManager profile UUID couldn't be identified. "
+                                    "apctl left any unrecorded profile untouched; check NetworkManager connections.");
         }
         current_uuid = *uuid;
         created_profile = true;
@@ -1468,8 +1477,7 @@ OperationResult HotspotService::start() const {
     state.profile_uuid = current_uuid;
     state.profile_backend = "nmcli-hotspot-v1";
     if (!save_state(state)) {
-        (void)stop();
-        return result(Severity::error, "Hotspot started, but setup couldn't be saved. Refresh status before retrying.", 1);
+        return fail_and_cleanup("Hotspot started, but setup state couldn't be saved.");
     }
     if (!created_profile) {
         const std::vector<std::vector<std::string>> settings = {
@@ -1484,14 +1492,11 @@ OperationResult HotspotService::start() const {
         };
         for (const auto& setting : settings) {
             if (!command(setting, error)) {
-                (void)stop();
-                return result(Severity::error,
-                    "Couldn't update hotspot setting `" + setting[5] + "`. " + error, 1);
+                return fail_and_cleanup("Couldn't update hotspot setting `" + setting[5] + "`. " + error);
             }
         }
         if (!command({"nmcli", "connection", "up", "uuid", current_uuid, "ifname", std::string(ap)}, error)) {
-            (void)stop();
-            return result(Severity::error, "NetworkManager couldn't activate the hotspot profile. " + error, 1);
+            return fail_and_cleanup("NetworkManager couldn't activate the hotspot profile. " + error);
         }
     }
     const auto vpn = nordvpn_info();
@@ -1502,30 +1507,52 @@ OperationResult HotspotService::start() const {
     return started;
 }
 
-OperationResult HotspotService::stop() const {
+namespace {
+
+void append_cleanup_error(std::string& errors, std::string message) {
+    if (message.empty()) return;
+    if (!errors.empty()) errors += " ";
+    errors += std::move(message);
+}
+
+OperationResult cleanup_owned_state(FirewallState state) {
     constexpr std::string_view ap = "ap0";
-    auto state = load_state();
     const bool owned_profile_exists = !state.profile_uuid.empty() && connection_exists_uuid(state.profile_uuid);
     const bool has_owned_resources = owned_profile_exists || state.interface_owned || state.dhcp || state.dns || state.route;
     if (!has_owned_resources && connection_name_exists("apctl-hotspot"))
         return result(Severity::error, "An existing hotspot wasn't created by this app, so it was left unchanged.", 3);
     std::string error;
+    bool cleanup_ok = true;
     if (owned_profile_exists) {
         (void)command({"nmcli", "connection", "down", "uuid", state.profile_uuid}, error, true);
-        if (!command({"nmcli", "connection", "delete", "uuid", state.profile_uuid}, error)) return result(Severity::error, error, 1);
+        std::string profile_error;
+        if (!command({"nmcli", "connection", "delete", "uuid", state.profile_uuid}, profile_error)) {
+            cleanup_ok = false;
+            append_cleanup_error(error, profile_error.empty()
+                ? "Couldn't remove the app-owned NetworkManager hotspot profile."
+                : profile_error);
+        } else {
+            state.profile_uuid.clear();
+            state.profile_backend.clear();
+        }
+    } else {
+        state.profile_uuid.clear();
+        state.profile_backend.clear();
     }
-    bool cleanup_ok = true;
     bool delete_dhcp = false;
     bool delete_dns = false;
     bool delete_route = false;
     const auto ufw = run_process({"ufw", "--version"});
-    if (ufw.exit_code != 0 && (state.dhcp || state.dns || state.route)) cleanup_ok = false;
+    if (ufw.exit_code != 0 && (state.dhcp || state.dns || state.route)) {
+        cleanup_ok = false;
+        append_cleanup_error(error, "UFW is unavailable, so recorded firewall rules could not be checked.");
+    }
     if (ufw.exit_code == 0) {
         const auto plan_remove = [&](std::vector<std::string> rule, bool& owned, bool& remove) {
             if (!owned) return;
             const auto presence = ufw_rule_presence(rule);
             if (presence == UfwRulePresence::unreadable) {
-                error = "Couldn't inspect UFW's IPv4 rules. The recorded firewall rule was left unchanged.";
+                append_cleanup_error(error, "Couldn't inspect UFW's IPv4 rules; a recorded rule was left unchanged.");
                 cleanup_ok = false;
             } else if (presence == UfwRulePresence::missing) {
                 owned = false;
@@ -1539,7 +1566,7 @@ OperationResult HotspotService::stop() const {
             plan_remove({"ufw", "route", "delete", "allow", "in", "on", std::string(ap), "out", "on", state.uplink,
                          "from", "10.42.0.0/24", "to", "any"}, state.route, delete_route);
         else if (state.route) {
-            error = "Couldn't identify the recorded uplink; its UFW route rule was left unchanged.";
+            append_cleanup_error(error, "Couldn't identify the recorded uplink; its UFW route rule was left unchanged.");
             cleanup_ok = false;
         }
     }
@@ -1548,24 +1575,54 @@ OperationResult HotspotService::stop() const {
         delete_interface = run_process({"iw", "dev", std::string(ap), "info"}).exit_code == 0;
         if (!delete_interface) state.interface_owned = false;
     }
-    if (!save_state(state)) cleanup_ok = false;
+    if (!save_state(state)) {
+        cleanup_ok = false;
+        append_cleanup_error(error, "Couldn't save the remaining cleanup state.");
+    }
 
-    if (delete_interface) (void)command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, error, true);
+    if (delete_interface) {
+        std::string ignored;
+        (void)command({"nmcli", "device", "set", std::string(ap), "managed", "no"}, ignored, true);
+    }
     if (delete_dhcp || delete_dns || delete_route || delete_interface) {
+        std::string privileged_error;
         const auto child = privileged_batch({"stop", delete_dhcp ? "1" : "0", delete_dns ? "1" : "0",
                                              delete_route ? "1" : "0", state.uplink.empty() ? "ap0" : state.uplink,
-                                             delete_interface ? "1" : "0"}, error);
+                                             delete_interface ? "1" : "0"}, privileged_error);
         if (helper_completed(child, "dhcp-delete")) state.dhcp = false;
         if (helper_completed(child, "dns-delete")) state.dns = false;
         if (helper_completed(child, "route-delete")) state.route = false;
         if (helper_completed(child, "interface-delete")) state.interface_owned = false;
-        if (!save_state(state)) cleanup_ok = false;
-        if (child.exit_code != 0) cleanup_ok = false;
+        if (!save_state(state)) {
+            cleanup_ok = false;
+            append_cleanup_error(error, "Couldn't save the remaining cleanup state.");
+        }
+        if (child.exit_code != 0) {
+            cleanup_ok = false;
+            append_cleanup_error(error, privileged_error);
+        }
     }
-    if (!cleanup_ok) return result(Severity::error, "Hotspot stopped, but some cleanup didn't finish. Run `apctl down` again. " + error, 1);
+    if (!cleanup_ok)
+        return result(Severity::error, "Some hotspot cleanup steps didn't finish. Run `apctl down` again. " + error, 1);
     std::error_code ignored;
     fs::remove(state_path(), ignored);
+    if (ignored)
+        return result(Severity::error, "Hotspot cleanup completed, but the saved cleanup state couldn't be removed. "
+                      "Run `apctl down` again.", 1);
     return result(Severity::success, "Hotspot stopped.");
+}
+
+OperationResult rollback_start(FirewallState state, std::string message, int exit_code) {
+    const auto cleanup = cleanup_owned_state(std::move(state));
+    if (cleanup.exit_code != 0)
+        message += " Startup cleanup did not finish. " + cleanup.message;
+    return result(Severity::error, std::move(message), exit_code);
+}
+
+}  // namespace
+
+OperationResult HotspotService::stop() const {
+    return cleanup_owned_state(load_state());
 }
 
 }  // namespace apctl::core

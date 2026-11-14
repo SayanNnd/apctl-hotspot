@@ -4,12 +4,14 @@
 #include <array>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <poll.h>
 #include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -57,6 +59,21 @@ bool helper_step(std::string_view name, const std::vector<std::string>& args, bo
     return true;
 }
 
+bool unmanage_interface(std::string_view iface) {
+    if (!helper_step("networkmanager-unmanage", {"nmcli", "device", "set", std::string(iface), "managed", "no"}))
+        return false;
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        const auto state = run_process({"nmcli", "-g", "GENERAL.STATE", "device", "show", std::string(iface)});
+        const auto value = state.out;
+        const bool unmanaged = value.rfind("10", 0) == 0 &&
+                               (value.size() == 2 || std::isspace(static_cast<unsigned char>(value[2])));
+        if (state.exit_code == 0 && unmanaged) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::cout << "APCTL_FAIL networkmanager-unmanage\n";
+    return false;
+}
+
 }  // namespace
 
 int run_privileged_helper(int argc, char* const argv[]) {
@@ -75,7 +92,7 @@ int run_privileged_helper(int argc, char* const argv[]) {
         if (flag(argv[3]) &&
             !helper_step("interface-create", {"iw", "phy", "phy" + std::string(argv[4]),
                                                "interface", "add", "ap0", "type", "__ap"})) return 1;
-        if (!helper_step("networkmanager-unmanage", {"nmcli", "device", "set", "ap0", "managed", "no"})) return 1;
+        if (!unmanage_interface("ap0")) return 1;
         const bool interface_ready =
             helper_step("interface-down", {"ip", "link", "set", "dev", "ap0", "down"}) &&
             helper_step("interface-mode", {"iw", "dev", "ap0", "set", "type", "__ap"}) &&
@@ -102,7 +119,7 @@ int run_privileged_helper(int argc, char* const argv[]) {
 
     if (operation == "interface-prepare") {
         if (argc != 3) return 2;
-        if (!helper_step("networkmanager-unmanage", {"nmcli", "device", "set", "ap0", "managed", "no"})) return 1;
+        if (!unmanage_interface("ap0")) return 1;
         const bool interface_ready =
             helper_step("interface-down", {"ip", "link", "set", "dev", "ap0", "down"}) &&
             helper_step("interface-mode", {"iw", "dev", "ap0", "set", "type", "__ap"}) &&
