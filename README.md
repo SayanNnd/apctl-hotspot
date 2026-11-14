@@ -30,6 +30,7 @@ sudo cmake --install build --prefix /usr/local
 | Command | Usage |
 | --- | --- |
 | `help` | `apctl help` — list commands. `apctl -h` and `apctl --help` are aliases. |
+| `setup` | `apctl setup` — run read-only checks for dependencies, Wi-Fi capability, firewall/VPN state, credentials, and authorization-agent hints. |
 | `check` | `apctl check` — check concurrent Wi-Fi/hotspot support and the current channel. |
 | `status` | `apctl status` — show the Wi-Fi connection, hotspot state, and connected device count. |
 | `gen` | `apctl gen [SSID]` — generate and save credentials. The SSID is optional; the default is `apctl-hotspot`. |
@@ -45,6 +46,7 @@ sudo cmake --install build --prefix /usr/local
 ### Typical flow
 
 ```sh
+apctl setup
 apctl check
 apctl gen "My Hotspot"
 apctl change-band auto
@@ -67,6 +69,8 @@ Starting a hotspot may show more than one system password prompt. These are norm
 
 The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. Your existing Wi-Fi connection and unrelated firewall rules are left in place.
 
+`apctl setup` is a read-only diagnostic. It does not install software, request elevated permissions, change desktop configuration, or change firewall/VPN settings. Its polkit-agent check is only a process hint; it cannot confirm that an agent is registered or ready to authorize a request.
+
 ## Requirements and support
 
 | Status | What |
@@ -82,6 +86,7 @@ The CLI exits after `apctl up`, but the hotspot keeps running. Closing the termi
 - The locally administered AP MAC was validated on the tested adapter; behavior on other drivers is unverified.
 - By default, a one-radio hotspot follows the uplink's channel. A forced band on a different channel requires driver-reported multi-channel station/AP support and an allowed AP frequency; this remains adapter and regulatory-domain dependent.
 - Firewall setup currently handles UFW rules. Other firewall managers may need separate integration.
+- NordVPN's Linux firewall can block traffic from hotspot clients. If `apctl setup` reports that the hotspot subnet is not allowlisted, you can run `nordvpn allowlist add subnet 10.42.0.0/24` yourself. NordVPN documents allowlisted subnets as traffic that bypasses the VPN and kill switch; this is a persistent NordVPN policy change. `apctl` detects this condition and provides the command, but does not configure NordVPN.
 - Starting the hotspot can prompt for system authorization through `pkexec`.
 - The current build passes the hotspot password to NetworkManager as a process argument. Other local users may be able to inspect it while the command runs.
 - The project has been tested on one laptop/adapter combination so far.

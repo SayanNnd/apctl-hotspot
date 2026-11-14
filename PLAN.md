@@ -25,6 +25,7 @@ On the tested CachyOS laptop with RTL8852CE, the laptop stays connected to Wi-Fi
 3. Add fixture-based tests for command parsing and state handling.
 4. Verify forced alternate-band behavior on adapters that advertise multi-channel station/AP support.
 5. Package and publish `apctl-hotspot` after portability testing.
+6. Consider per-change, explicitly confirmed remediation after setup diagnostics mature; do not install packages or edit desktop/VPN settings automatically.
 
 ## Known limits
 

@@ -462,6 +462,9 @@ int run() {
     auto check_button = action_button("Check Wi-Fi support", [&] {
         launch([&] { return service.check(); });
     });
+    auto setup_button = action_button("Setup diagnostics", [&] {
+        launch([&] { return service.setup(); });
+    });
     auto credentials_button = action_button("Show password and QR code", [&] {
         launch([&] { return service.show_credentials(); });
     });
@@ -526,7 +529,7 @@ int run() {
     confirm_input = Input(&model.confirm_input, confirm_options);
 
     // ------------------------------------------------------ pages
-    auto action_list = Container::Vertical({start_button, stop_button, check_button,
+    auto action_list = Container::Vertical({start_button, stop_button, setup_button, check_button,
         credentials_button, password_button, ssid_button, change_band_button, refresh_button, quit_button});
     auto password_form = Container::Vertical({password_input, confirm_input, save_password, cancel_password});
     auto ssid_form = Container::Vertical({ssid_input, save_ssid, cancel_ssid});

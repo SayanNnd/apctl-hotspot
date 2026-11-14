@@ -36,6 +36,7 @@ class HotspotService {
 public:
     Status status() const;
     OperationResult check() const;
+    OperationResult setup() const;
     OperationResult generate(std::string ssid = "apctl-hotspot") const;
     OperationResult start() const;
     OperationResult stop() const;

@@ -41,6 +41,7 @@ std::optional<std::string> prompt_secret(const char* prompt) {
 void print_help() {
     std::cout << "Usage: apctl <command>\n"
               << "  help                 Show this help (-h and --help also work)\n"
+              << "  setup                Run read-only setup diagnostics\n"
               << "  check                Check if this computer can share Wi-Fi\n"
               << "  status               Show Wi-Fi and hotspot status\n"
               << "  gen [SSID]           Save an SSID and generate a password\n"
@@ -76,6 +77,7 @@ int main(int argc, char** argv) {
     if (action == "tui") return apctl::tui::run();
 
     HotspotService service;
+    if (action == "setup") return report(service.setup());
     if (action == "check") return report(service.check());
     if (action == "status") {
         const auto state = service.status();

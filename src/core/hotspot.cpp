@@ -3,9 +3,11 @@
 #include "process.hpp"
 
 #include <algorithm>
+#include <arpa/inet.h>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -201,6 +203,124 @@ bool save_state(const FirewallState& state) {
     return ok;
 }
 
+bool executable_available(std::string_view name) {
+    const char* path = std::getenv("PATH");
+    if (!path) return false;
+    std::istringstream entries(path);
+    std::string directory;
+    while (std::getline(entries, directory, ':')) {
+        if (directory.empty()) directory = ".";
+        const auto candidate = fs::path(directory) / name;
+        if (access(candidate.c_str(), X_OK) == 0) return true;
+    }
+    return false;
+}
+
+std::optional<std::pair<uint32_t, unsigned>> ipv4_cidr(std::string_view value) {
+    const auto slash = value.find('/');
+    if (slash == std::string_view::npos) return std::nullopt;
+    const std::string address(value.substr(0, slash));
+    unsigned prefix = 0;
+    try {
+        const std::string prefix_text(value.substr(slash + 1));
+        size_t parsed = 0;
+        const unsigned long converted = std::stoul(prefix_text, &parsed);
+        if (parsed != prefix_text.size() || converted > 32) return std::nullopt;
+        prefix = static_cast<unsigned>(converted);
+    } catch (...) {
+        return std::nullopt;
+    }
+    in_addr parsed_address{};
+    if (inet_pton(AF_INET, address.c_str(), &parsed_address) != 1) return std::nullopt;
+    return std::pair<uint32_t, unsigned>{ntohl(parsed_address.s_addr), prefix};
+}
+
+bool cidr_contains(std::string_view parent, std::string_view child) {
+    const auto outer = ipv4_cidr(parent);
+    const auto inner = ipv4_cidr(child);
+    if (!outer || !inner || outer->second > inner->second) return false;
+    const uint32_t mask = outer->second == 0 ? 0 : (0xffffffffu << (32 - outer->second));
+    return (outer->first & mask) == (inner->first & mask);
+}
+
+bool hotspot_subnet_allowlisted(std::string_view settings) {
+    static const std::regex cidr_pattern(R"((?:\d{1,3}\.){3}\d{1,3}/\d{1,2})");
+    static constexpr std::string_view hotspot_subnet = "10.42.0.0/24";
+    const std::string text(settings);
+    for (std::sregex_iterator it(text.begin(), text.end(), cidr_pattern), end; it != end; ++it) {
+        if (cidr_contains((*it).str(), hotspot_subnet)) return true;
+    }
+    return false;
+}
+
+struct NordVpnInfo {
+    bool installed = false;
+    bool settings_available = false;
+    bool firewall_enabled = false;
+    bool hotspot_subnet_allowlisted = false;
+};
+
+NordVpnInfo nordvpn_info() {
+    NordVpnInfo info;
+    info.installed = executable_available("nordvpn");
+    if (!info.installed) return info;
+    const auto settings = run_process({"nordvpn", "settings"});
+    if (settings.exit_code != 0) return info;
+    info.settings_available = true;
+    std::string output = settings.out;
+    std::transform(output.begin(), output.end(), output.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    info.firewall_enabled = output.find("firewall: enabled") != std::string::npos;
+    info.hotspot_subnet_allowlisted = hotspot_subnet_allowlisted(settings.out);
+    return info;
+}
+
+bool polkit_agent_process_detected() {
+    if (!executable_available("ps")) return false;
+    const auto processes = run_process({"ps", "-e", "-o", "comm="});
+    if (processes.exit_code != 0) return false;
+    static const std::vector<std::string> agent_prefixes = {
+        "polkit-gnome", "polkit-kde", "lxqt-policykit", "hyprpolkitagent",
+        "mate-polkit", "xfce-polkit", "noctalia"
+    };
+    std::istringstream lines(processes.out);
+    std::string process;
+    while (std::getline(lines, process)) {
+        process = trim(std::move(process));
+        if (std::any_of(agent_prefixes.begin(), agent_prefixes.end(), [&](const std::string& prefix) {
+                return process.rfind(prefix, 0) == 0;
+            })) return true;
+    }
+    return false;
+}
+
+std::string saved_config_status() {
+    const auto inspect = [](const fs::path& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) return std::pair<bool, bool>{false, false};
+        bool has_ssid = false;
+        bool has_password = false;
+        std::string line;
+        while (std::getline(file, line)) {
+            const auto equal = line.find('=');
+            if (equal == std::string::npos) continue;
+            const auto key = line.substr(0, equal);
+            const auto value = line.substr(equal + 1);
+            if (key == "ssid") has_ssid = !value.empty();
+            else if (key == "password") has_password = value.size() >= 8;
+        }
+        return std::pair<bool, bool>{true, has_ssid && has_password && !file.bad()};
+    };
+    const auto current = inspect(config_path());
+    if (current.first) return current.second ? "saved credentials are present (values hidden)"
+                                              : "current config exists but is incomplete or unreadable";
+    const auto legacy = inspect(legacy_config_path());
+    if (legacy.first) return legacy.second ? "legacy Caelestia config found; migration is deferred"
+                                           : "legacy config exists but is incomplete or unreadable";
+    return "no saved credentials; run `apctl gen` first";
+}
+
 bool command(const std::vector<std::string>& args, std::string& error, bool quiet = false,
              ProcessResult* process_result = nullptr) {
     const auto child = run_process(args);
@@ -327,19 +447,19 @@ bool configure_firewall(FirewallState& state, std::string_view ap, std::string_v
            add_ufw_rule({"ufw", "route", "allow", "in", "on", std::string(ap), "out", "on", std::string(uplink), "from", "10.42.0.0/24", "to", "any"}, state.route, error) && save_state(state);
 }
 
-bool nordvpn_firewall_enabled() {
-    const auto settings = run_process({"nordvpn", "settings"});
-    if (settings.exit_code != 0) return false;
-    std::string output = settings.out;
-    std::transform(output.begin(), output.end(), output.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return output.find("firewall: enabled") != std::string::npos;
+std::string nordvpn_firewall_message(const NordVpnInfo& info) {
+    if (!info.settings_available)
+        return "Hotspot is running, but NordVPN's firewall state couldn't be checked. Verify it with `nordvpn settings`.";
+    if (info.hotspot_subnet_allowlisted)
+        return "Hotspot is running. NordVPN's firewall is active, and the hotspot subnet is allowlisted.";
+    return "Hotspot is running, but NordVPN's firewall is active and may block clients. "
+           "To allow hotspot traffic outside the VPN, run `nordvpn allowlist add subnet 10.42.0.0/24`. "
+           "This changes NordVPN's persistent policy; apctl will not change it for you.";
 }
 
-std::string nordvpn_firewall_message() {
-    return "Hotspot is running, but NordVPN's firewall is active and may block clients. "
-           "Allowlist the hotspot subnet with `nordvpn allowlist add subnet 10.42.0.0/24`.";
+bool nordvpn_needs_warning(const NordVpnInfo& info) {
+    return info.installed && (!info.settings_available ||
+                              (info.firewall_enabled && !info.hotspot_subnet_allowlisted));
 }
 
 std::optional<std::string> connection_uuid(std::string_view name) {
@@ -709,6 +829,72 @@ OperationResult HotspotService::check() const {
                   channel_band_name(*channel) + " channel " + *channel + ".", 0);
 }
 
+OperationResult HotspotService::setup() const {
+    std::ostringstream report;
+    report << "Read-only setup diagnostics (no settings were changed)\n";
+
+    const bool nmcli_found = executable_available("nmcli");
+    const auto nm = nmcli_found ? run_process({"nmcli", "general", "status"}) : ProcessResult{};
+    const bool nm_ready = nmcli_found && nm.exit_code == 0;
+    report << "- NetworkManager / nmcli: "
+           << (nm_ready ? "available" : nmcli_found ? "not responding" : "nmcli not found") << '\n';
+
+    const bool iw_found = executable_available("iw");
+    report << "- iw: " << (iw_found ? "available" : "not found") << '\n';
+    report << "- pkexec: " << (executable_available("pkexec") ? "available" : "not found") << '\n';
+
+    std::optional<std::string> iface;
+    if (nm_ready && iw_found) iface = active_wifi();
+    if (!iface) {
+        report << "- Wi-Fi uplink: " << (nm_ready && iw_found ? "no connected Wi-Fi interface found" : "not checked") << '\n';
+    } else {
+        report << "- Wi-Fi uplink: connected on " << *iface << '\n';
+        const auto channel = connected_channel(*iface);
+        report << "- Current Wi-Fi channel: " << (channel ? *channel + " (" + channel_band_name(*channel) + ")" : "unavailable") << '\n';
+        const auto info = phy_info(*iface);
+        if (!info) report << "- Wi-Fi and hotspot concurrency: couldn't inspect adapter capabilities\n";
+        else if (combination_supports_ap_sta(*info, 1))
+            report << "- Wi-Fi and hotspot concurrency: adapter advertises support (runtime still needs validation)\n";
+        else report << "- Wi-Fi and hotspot concurrency: adapter does not advertise concurrent client/AP support\n";
+    }
+
+    std::string ufw_error;
+    if (!executable_available("ufw")) {
+        report << "- UFW: not installed; apctl manages no firewall rules on this system\n";
+    } else {
+        const auto ufw = run_process({"ufw", "--version"});
+        const auto firewall = ufw.exit_code == 0 ? ufw_state(ufw_error) : UfwState::unavailable;
+        if (firewall == UfwState::enabled) report << "- UFW: installed and configured enabled\n";
+        else if (firewall == UfwState::disabled) report << "- UFW: installed and configured disabled\n";
+        else report << "- UFW: installed; enabled state couldn't be confirmed" << (ufw_error.empty() ? "\n" : ": " + ufw_error + "\n");
+    }
+
+    const auto vpn = nordvpn_info();
+    if (!vpn.installed) report << "- NordVPN: not found\n";
+    else if (!vpn.settings_available) report << "- NordVPN: installed; settings unavailable, firewall state unknown\n";
+    else if (!vpn.firewall_enabled) report << "- NordVPN firewall: disabled\n";
+    else if (vpn.hotspot_subnet_allowlisted)
+        report << "- NordVPN firewall: enabled; hotspot subnet 10.42.0.0/24 is allowlisted\n";
+    else
+        report << "- NordVPN firewall: enabled; hotspot clients may be blocked\n"
+               << "  To allow hotspot traffic outside the VPN, run: nordvpn allowlist add subnet 10.42.0.0/24\n"
+               << "  This changes NordVPN's persistent policy. apctl will not run it automatically.\n";
+
+    if (polkit_agent_process_detected())
+        report << "- Polkit session: a common authentication-agent process was detected; registration/readiness can't be confirmed\n";
+    else
+        report << "- Polkit session: no common authentication-agent process detected; it may be integrated into your desktop shell\n"
+               << "  Privileged setup may need a working session agent. apctl won't install agents or edit desktop settings.\n";
+
+    report << "- Hotspot credentials: " << saved_config_status() << '\n';
+    std::error_code ec;
+    report << "- Saved app setup state: " << (fs::exists(state_path(), ec) && !ec ? "present" : "not present") << '\n';
+
+    const auto current = status();
+    report << "- Hotspot: " << (current.hotspot_active ? "active" : "stopped") << '\n';
+    return result(Severity::info, report.str());
+}
+
 OperationResult HotspotService::generate(std::string ssid) const {
     if (!valid_ssid(ssid)) return result(Severity::error, "The SSID must be 1–32 characters on one line.", 2);
     Config config{std::move(ssid), random_password()};
@@ -869,9 +1055,10 @@ OperationResult HotspotService::start() const {
             if (!save_state(state))
                 return result(Severity::error,
                     "Hotspot is running, but its setup state couldn't be saved. Run `apctl up` again to retry.", 1);
-            const bool nordvpn_firewall = nordvpn_firewall_enabled();
-            auto already = result(nordvpn_firewall ? Severity::warning : Severity::info,
-                                  nordvpn_firewall ? nordvpn_firewall_message() : "Hotspot is already running.");
+            const auto vpn = nordvpn_info();
+            const bool nordvpn_warning = nordvpn_needs_warning(vpn);
+            auto already = result(nordvpn_warning ? Severity::warning : Severity::info,
+                                  nordvpn_warning ? nordvpn_firewall_message(vpn) : "Hotspot is already running.");
             already.credentials = load_credentials(true);
             return already;
         }
@@ -963,9 +1150,10 @@ OperationResult HotspotService::start() const {
         if (!command({"nmcli", "connection", "up", "uuid", current_uuid, "ifname", std::string(ap)}, error))
             return result(Severity::error, "NetworkManager couldn't activate the hotspot profile. " + error, 1);
     }
-    const bool nordvpn_firewall = nordvpn_firewall_enabled();
-    auto started = result(nordvpn_firewall ? Severity::warning : Severity::success,
-                          nordvpn_firewall ? nordvpn_firewall_message() : "Hotspot is ready. Wi-Fi stays connected.");
+    const auto vpn = nordvpn_info();
+    const bool nordvpn_warning = nordvpn_needs_warning(vpn);
+    auto started = result(nordvpn_warning ? Severity::warning : Severity::success,
+                          nordvpn_warning ? nordvpn_firewall_message(vpn) : "Hotspot is ready. Wi-Fi stays connected.");
     started.credentials = load_credentials(true);
     return started;
 }
