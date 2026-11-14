@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -195,6 +196,63 @@ std::vector<std::string> split_lines(const std::string& value) {
     return lines;
 }
 
+Color setup_value_color(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (value.find("not found") != std::string::npos ||
+        value.find("not responding") != std::string::npos ||
+        value.find("does not advertise") != std::string::npos ||
+        value.find("not allowlisted") != std::string::npos ||
+        value.find("blocked") != std::string::npos ||
+        value.find("incomplete") != std::string::npos ||
+        value.find("unreadable") != std::string::npos ||
+        value.find("no saved credentials") != std::string::npos)
+        return kBad;
+    if (value.find("unknown") != std::string::npos ||
+        value.find("couldn't") != std::string::npos ||
+        value.find("could not") != std::string::npos ||
+        value.find("not checked") != std::string::npos ||
+        value.find("no connected") != std::string::npos ||
+        value.find("not installed") != std::string::npos ||
+        value.find("unavailable") != std::string::npos ||
+        value.find("may block") != std::string::npos ||
+        value.find("still needs validation") != std::string::npos ||
+        value.find("not present") != std::string::npos ||
+        value.find("not detected") != std::string::npos ||
+        value.find("no common authentication-agent") != std::string::npos)
+        return kWarn;
+    if (value.find("available") != std::string::npos ||
+        value.find("connected") != std::string::npos ||
+        value.find("advertises support") != std::string::npos ||
+        value.find("enabled") != std::string::npos ||
+        value.find("disabled") != std::string::npos ||
+        value.find("allowlisted") != std::string::npos ||
+        value.find("not restricted") != std::string::npos ||
+        value.find("credentials are present") != std::string::npos ||
+        value.find("configured") != std::string::npos ||
+        value.find("active") != std::string::npos ||
+        value.find("present") != std::string::npos)
+        return kGood;
+    return kGood;
+}
+
+Element setup_diagnostic_block(const std::string& value) {
+    Elements out;
+    for (const auto& line : split_lines(value)) {
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) {
+            out.push_back(paragraph(line) | color(kTitle));
+            continue;
+        }
+        const std::string label = line.substr(0, colon + 1);
+        const std::string detail = line.substr(colon + 1);
+        out.push_back(hbox({text(label) | color(kInk),
+                            paragraph(detail) | flex | color(setup_value_color(detail))}));
+    }
+    return vbox(std::move(out));
+}
+
 // paragraph() collapses newlines, so wrap each line separately.
 Elements text_block(const std::string& value) {
     Elements out;
@@ -259,8 +317,12 @@ Element result_popup(const OperationResult& result, Element ok_button) {
 
     const bool has_qr = result.credentials && !result.credentials->qr_text.empty();
     Elements body;
-    if (!has_qr || result.message != "Hotspot credentials")
-        body = text_block(result.message);
+    if (!has_qr || result.message != "Hotspot credentials") {
+        if (result.message.rfind("Read-only setup diagnostics", 0) == 0)
+            body.push_back(setup_diagnostic_block(result.message));
+        else
+            body = text_block(result.message);
+    }
     int qr_width = 0;
     std::vector<std::string> qr;
     if (result.credentials) {

@@ -2,9 +2,13 @@
 #include "../core/process.hpp"
 #include "../tui/tui.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <termios.h>
@@ -18,6 +22,75 @@ void print_result(const apctl::core::OperationResult& result) {
     if (!result.credentials) return;
     std::cout << "SSID: " << result.credentials->ssid << "\nPassword: " << result.credentials->password << '\n';
     if (!result.credentials->qr_text.empty()) std::cout << result.credentials->qr_text;
+}
+
+enum class DiagnosticTone { normal, good, warning, error };
+
+DiagnosticTone diagnostic_tone(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (value.find("not found") != std::string::npos ||
+        value.find("not responding") != std::string::npos ||
+        value.find("does not advertise") != std::string::npos ||
+        value.find("not allowlisted") != std::string::npos ||
+        value.find("blocked") != std::string::npos ||
+        value.find("incomplete") != std::string::npos ||
+        value.find("unreadable") != std::string::npos ||
+        value.find("no saved credentials") != std::string::npos)
+        return DiagnosticTone::error;
+    if (value.find("unknown") != std::string::npos ||
+        value.find("couldn't") != std::string::npos ||
+        value.find("could not") != std::string::npos ||
+        value.find("not checked") != std::string::npos ||
+        value.find("no connected") != std::string::npos ||
+        value.find("not installed") != std::string::npos ||
+        value.find("unavailable") != std::string::npos ||
+        value.find("may block") != std::string::npos ||
+        value.find("still needs validation") != std::string::npos ||
+        value.find("not present") != std::string::npos ||
+        value.find("not detected") != std::string::npos ||
+        value.find("no common authentication-agent") != std::string::npos)
+        return DiagnosticTone::warning;
+    if (value.find("available") != std::string::npos ||
+        value.find("connected") != std::string::npos ||
+        value.find("advertises support") != std::string::npos ||
+        value.find("enabled") != std::string::npos ||
+        value.find("disabled") != std::string::npos ||
+        value.find("allowlisted") != std::string::npos ||
+        value.find("not restricted") != std::string::npos ||
+        value.find("credentials are present") != std::string::npos ||
+        value.find("configured") != std::string::npos ||
+        value.find("active") != std::string::npos ||
+        value.find("present") != std::string::npos)
+        return DiagnosticTone::good;
+    return DiagnosticTone::good;
+}
+
+const char* diagnostic_ansi(DiagnosticTone tone) {
+    switch (tone) {
+        case DiagnosticTone::good: return "\033[32m";
+        case DiagnosticTone::warning: return "\033[33m";
+        case DiagnosticTone::error: return "\033[31m";
+        case DiagnosticTone::normal: return "\033[0m";
+    }
+    return "\033[0m";
+}
+
+void print_setup_diagnostics(const apctl::core::OperationResult& result) {
+    const bool use_color = isatty(STDOUT_FILENO) && std::getenv("NO_COLOR") == nullptr;
+    std::istringstream lines(result.message);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto colon = line.find(':');
+        if (!use_color || colon == std::string::npos) {
+            std::cout << line << '\n';
+            continue;
+        }
+        const std::string label = line.substr(0, colon + 1);
+        const std::string value = line.substr(colon + 1);
+        std::cout << label << diagnostic_ansi(diagnostic_tone(value)) << value << "\033[0m\n";
+    }
 }
 
 std::optional<std::string> prompt_secret(const char* prompt) {
@@ -81,7 +154,11 @@ int main(int argc, char** argv) {
     if (action == "tui") return apctl::tui::run();
 
     HotspotService service;
-    if (action == "setup") return report(service.setup());
+    if (action == "setup") {
+        const auto diagnostics = service.setup();
+        print_setup_diagnostics(diagnostics);
+        return diagnostics.exit_code;
+    }
     if (action == "check") return report(service.check());
     if (action == "status") {
         const auto state = service.status();
