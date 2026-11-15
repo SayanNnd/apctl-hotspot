@@ -5,6 +5,7 @@
 /cmake-build-*/
 /CMakeUserPresets.json
 /compile_commands.json
+/bugs.md
 
 # IDE and editor files
 /.idea/

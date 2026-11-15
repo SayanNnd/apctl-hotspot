@@ -136,8 +136,9 @@ constexpr int kPagePassword = 1;
 constexpr int kPageSsid = 2;
 constexpr int kPageBand = 3;
 constexpr int kPageResult = 4;
+constexpr int kPageStopConfirm = 5;
 
-enum class Dialog { none, result, password, ssid, band };
+enum class Dialog { none, result, password, ssid, band, stop_confirm };
 
 struct Completion {
     OperationResult operation;
@@ -273,6 +274,8 @@ Element status_line(const Status& status) {
     if (status.hotspot_active) {
         hotspot = status.hotspot_ssid.empty() ? "active" : status.hotspot_ssid;
         if (!status.hotspot_channel.empty()) hotspot += "  ·  ch " + status.hotspot_channel;
+    } else if (status.hotspot_profile_configured) {
+        hotspot = "stopped (profile saved)";
     }
     return vbox({
         hbox({text("Wi-Fi     ") | color(kInk),
@@ -316,9 +319,10 @@ Element result_popup(const OperationResult& result, Element ok_button) {
     const Color accent = severity_color(result.severity);
 
     const bool has_qr = result.credentials && !result.credentials->qr_text.empty();
+    const bool is_setup_diagnostics = result.message.rfind("Read-only setup diagnostics", 0) == 0;
     Elements body;
     if (!has_qr || result.message != "Hotspot credentials") {
-        if (result.message.rfind("Read-only setup diagnostics", 0) == 0)
+        if (is_setup_diagnostics)
             body.push_back(setup_diagnostic_block(result.message));
         else
             body = text_block(result.message);
@@ -335,7 +339,10 @@ Element result_popup(const OperationResult& result, Element ok_button) {
         }
     }
     const int available_width = term.dimx - 6;
-    const int width = std::max(30, std::min(available_width, std::max(64, qr_width + 2)));
+    const int preferred_width = is_setup_diagnostics
+        ? std::min(88, std::max(64, term.dimx * 2 / 3))
+        : std::max(64, qr_width + 2);
+    const int width = std::max(30, std::min(available_width, preferred_width));
     if (result.credentials && !result.credentials->qr_text.empty()) {
             const int rows_needed = static_cast<int>(qr.size()) + static_cast<int>(body.size()) + 9;
             body.push_back(separator() | color(kLine));
@@ -391,6 +398,7 @@ int run() {
     // between them before every component has been built.
     Component ssid_input, password_input, confirm_input;
     Component save_password, cancel_password, save_ssid, cancel_ssid, ok_button;
+    Component confirm_stop_button, cancel_stop_button;
     Component auto_band_button, band_24_button, band_5_button;
 
     // ------------------------------------------------------ state helpers
@@ -412,6 +420,7 @@ int run() {
             case Dialog::ssid: model.page = kPageSsid; break;
             case Dialog::band: model.page = kPageBand; break;
             case Dialog::result: model.page = kPageResult; break;
+            case Dialog::stop_confirm: model.page = kPageStopConfirm; break;
             case Dialog::none: model.page = kPageActions; break;
         }
     };
@@ -550,8 +559,13 @@ int run() {
         launch([&] { return service.start(); });
     }, [&] { return !model.status.hotspot_active; });
     auto stop_button = action_button("Stop hotspot", [&] {
-        launch([&] { return service.stop(); });
+        open_dialog(Dialog::stop_confirm);
+        confirm_stop_button->TakeFocus();
     }, [&] { return model.status.hotspot_active; });
+    confirm_stop_button = action_button("Stop hotspot", [&] {
+        launch([&] { return service.stop(); });
+    });
+    cancel_stop_button = action_button("Cancel", close_dialog);
     auto check_button = action_button("Check Wi-Fi support", [&] {
         launch([&] { return service.check(); });
     });
@@ -635,8 +649,10 @@ int run() {
     auto ssid_form = Container::Vertical({ssid_input, save_ssid, cancel_ssid});
     auto band_choices = Container::Vertical({auto_band_button, band_24_button, band_5_button});
     auto result_page = Container::Vertical({ok_button});
-    // Order must match kPageActions / kPagePassword / kPageSsid / kPageBand / kPageResult.
-    auto pages = Container::Tab({action_list, password_form, ssid_form, band_choices, result_page}, &model.page);
+    auto stop_confirm_page = Container::Vertical({confirm_stop_button, cancel_stop_button});
+    // Order must match the kPage* constants above.
+    auto pages = Container::Tab({action_list, password_form, ssid_form, band_choices,
+                                  result_page, stop_confirm_page}, &model.page);
 
     // ------------------------------------------------------ rendering
     // Inner width is kPanelWidth minus the two outline cells.
@@ -813,6 +829,18 @@ int run() {
                 kAccent);
             return dbox({base | dim, band_popup | center}) | flex;
         }
+        if (model.dialog == Dialog::stop_confirm) {
+            Element stop_popup = outline(
+                padded(vbox({
+                    text("Stop the hotspot?") | bold | color(kTitle),
+                    separator() | color(kLine),
+                    text("Connected devices will be disconnected.") | color(kInk),
+                    confirm_stop_button->Render(),
+                    cancel_stop_button->Render()
+                })) | size(WIDTH, EQUAL, 42) | bgcolor(kPanel) | clear_under,
+                kAccent);
+            return dbox({base | dim, stop_popup | center}) | flex;
+        }
         if (model.dialog == Dialog::result) {
             return dbox({base | dim, result_popup(model.result, ok_button->Render()) | center}) | flex;
         }
@@ -842,6 +870,10 @@ int run() {
         if (model.dialog == Dialog::band) {
             if (is_quit_key) { close_dialog(); return true; }
             return false;  // Up/Down, Enter, and mouse input go to the band choices.
+        }
+        if (model.dialog == Dialog::stop_confirm) {
+            if (is_quit_key) { close_dialog(); return true; }
+            return false;  // Confirm and cancel buttons receive keyboard and mouse input.
         }
         if (is_quit_key) {
             screen.Exit();

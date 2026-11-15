@@ -71,7 +71,9 @@ If no SSID is provided to `gen`, it uses `apctl-hotspot`. Passwords are generate
 
 The CLI exits after `apctl up`, but the hotspot keeps running. Closing the terminal does not stop it. Run `apctl down` or `apctl cleanup` to stop the hotspot, remove the app-created virtual interface, and remove only the UFW rules the app recorded as its own. This also handles saved state migrated from the old Caelestia config location. Profiles and rules without an app ownership record are left untouched.
 
-`apctl setup` is a read-only diagnostic. It does not install software, request elevated permissions, change desktop configuration, or change firewall/VPN settings. Its polkit-agent check is only a process hint; it cannot confirm that an agent is registered or ready to authorize a request.
+`apctl setup` is a read-only diagnostic. It does not install software, request elevated permissions, change desktop configuration, or change firewall/VPN settings. Its polkit-agent check is only a process hint; it cannot confirm that an agent is registered or ready to authorize a request. Use one authentication agent for the active desktop session. Noctalia has a built-in agent controlled by `[shell].polkit_agent`; if using a separate agent, disable the built-in one first to avoid competing registrations.
+
+If `pkexec` displays a terminal password prompt instead of a desktop dialog, it may be using its built-in text agent because no session agent is registered. If authentication fails and the system journal reports `No session for cookie`, stop retrying: this can be a Polkit/helper session bug even when the password is accepted. Use a separate session authentication agent or update Polkit, then verify authorization before retrying apctl. Repeated failed attempts can trigger a temporary PAM account lockout. apctl never installs or configures authentication agents. See the [upstream Polkit issue](https://github.com/polkit-org/polkit/issues/686) for one documented occurrence of this failure.
 
 ## Requirements and support
 

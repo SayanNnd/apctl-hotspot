@@ -41,6 +41,7 @@ struct Status {
     bool credentials_configured = false;
     std::string wifi_device;
     std::string wifi_connection;
+    bool hotspot_profile_configured = false;
     bool hotspot_active = false;
     std::string hotspot_ssid;
     std::string hotspot_band;

@@ -445,7 +445,7 @@ bool polkit_agent_process_detected() {
     if (processes.exit_code != 0) return false;
     static const std::vector<std::string> agent_prefixes = {
         "polkit-gnome", "polkit-kde", "lxqt-policykit", "hyprpolkitagent",
-        "mate-polkit", "xfce-polkit", "noctalia"
+        "mate-polkit", "xfce-polkit"
     };
     std::istringstream lines(processes.out);
     std::string process;
@@ -541,8 +541,13 @@ ProcessResult privileged_batch(const std::vector<std::string>& args, std::string
     const std::string authorization_action = !args.empty() && args.front() == "stop"
         ? "hotspot cleanup" : ( !args.empty() && args.front() == "interface-prepare"
             ? "hotspot restart" : "hotspot setup");
-    if (detail.find("request dismissed") != std::string::npos)
-        error = "Authorization for " + authorization_action + " was dismissed. Approve the prompt and retry.";
+    const bool helper_started = child.out.find("APCTL_") != std::string::npos;
+    if (detail.find("no session for cookie") != std::string::npos) {
+        error = "Polkit couldn't match authorization to this login session. Check `apctl setup`; use exactly one "
+                "registered session agent or update Polkit. Stop repeated attempts to avoid a temporary PAM lockout.";
+    } else if (detail.find("request dismissed") != std::string::npos)
+        error = "Authorization for " + authorization_action + " was dismissed or couldn't be completed. Check the "
+                "session Polkit agent before retrying; repeated failures can temporarily lock the account.";
     else if (child.out.find("APCTL_SKIP") != std::string::npos)
         error = "A matching firewall rule appeared during setup. It was left unowned; inspect UFW and retry.";
     else if (child.out.find("APCTL_FAIL interface-create") != std::string::npos)
@@ -555,10 +560,13 @@ ProcessResult privileged_batch(const std::vector<std::string>& args, std::string
         error = "Couldn't prepare the hotspot interface for NetworkManager.";
     else if (!detail.empty() && (detail.find("not authorized") != std::string::npos ||
                                  detail.find("authentication agent") != std::string::npos ||
-                                 detail.find("password is required") != std::string::npos))
-        error = "System authorization is required. Approve the prompt and retry.";
+                                 detail.find("password is required") != std::string::npos ||
+                                 detail.find("authentication failed") != std::string::npos))
+        error = "System authorization failed. Check `apctl setup` and the session Polkit agent before retrying; "
+                "repeated failures can temporarily lock the account.";
     else
         error = "A privileged hotspot setup step couldn't complete. Check system settings and retry.";
+    if (!helper_started) error += " The privileged helper didn't start, so no helper changes were made.";
     return child;
 }
 
@@ -1083,6 +1091,10 @@ Status HotspotService::status() const {
         if (connection.exit_code == 0) current.wifi_connection = trim(connection.out);
     }
 
+    const auto saved_state = load_state();
+    current.hotspot_profile_configured = !saved_state.profile_uuid.empty() &&
+                                         connection_exists_uuid(saved_state.profile_uuid);
+
     const auto ap = run_process({"iw", "dev", "ap0", "info"});
     const auto state = run_process({"nmcli", "-g", "GENERAL.STATE", "device", "show", "ap0"});
     current.hotspot_active = ap.exit_code == 0 && state.exit_code == 0 && trim(state.out).rfind("100 ", 0) == 0;
@@ -1189,10 +1201,13 @@ OperationResult HotspotService::setup() const {
     report_vpn_diagnostics(report);
 
     if (polkit_agent_process_detected())
-        report << "- Polkit session: a common authentication-agent process was detected; registration/readiness can't be confirmed\n";
+        report << "- Polkit session agent: a standalone agent process was detected; registration/readiness can't be confirmed\n";
     else
-        report << "- Polkit session: no common authentication-agent process detected; it may be integrated into your desktop shell\n"
-               << "  Privileged setup may need a working session agent. apctl won't install agents or edit desktop settings.\n";
+        report << "- Polkit session agent: no standalone agent process detected; `pkexec` may use a terminal prompt\n";
+    report << "  Use exactly one authentication agent for this desktop session. In Noctalia, check `[shell].polkit_agent`; "
+              "otherwise use an agent provided by your desktop.\n"
+           << "  If the system log says `No session for cookie`, stop retrying; use a separate registered agent or update Polkit.\n"
+           << "  Repeated failed attempts can temporarily lock the account. apctl won't install agents or edit desktop settings.\n";
 
     report << "- Hotspot credentials: " << saved_config_status() << '\n';
     std::error_code ec;
@@ -1441,6 +1456,12 @@ OperationResult HotspotService::start() const {
     const auto privileged = privileged_batch({"start", create_interface ? "1" : "0", phy_index,
                                               firewall_plan->dhcp ? "1" : "0", firewall_plan->dns ? "1" : "0",
                                               firewall_plan->route ? "1" : "0", *iface}, error);
+    // pkexec can fail before the helper starts (for example, dismissed or
+    // failed authentication). In that case no system operation ran, so asking
+    // for authorization again to roll back stale saved resources is both
+    // unnecessary and potentially destructive.
+    if (privileged.exit_code != 0 && privileged.out.find("APCTL_") == std::string::npos)
+        return result(Severity::error, error, 1);
     if (helper_completed(privileged, "interface-create")) state.interface_owned = true;
     if (helper_completed(privileged, "dhcp")) state.dhcp = true;
     if (helper_completed(privileged, "dns")) state.dns = true;
